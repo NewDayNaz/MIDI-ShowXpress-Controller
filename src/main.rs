@@ -228,7 +228,7 @@ impl AppState {
 
     fn render_preset_panel(&mut self, ui: &Ui) {
         ui.child_window("##preset_panel")
-            .size([400.0, 0.0])
+            .size([500.0, 0.0])
             .border(true)
             .build(|| {
                 ui.text_colored([1.0, 0.8, 0.8, 1.0], "Preset Builder");
