@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+#[derive(PartialEq)]
 enum ConnectionState {
     Disconnected,
     Connecting,
@@ -62,6 +63,7 @@ struct AppState {
     // Controller Connection
     connection_state: ConnectionState,
     connection_address: String,
+    connection_password: String,
     
     // UI State
     new_preset_name: String,
@@ -94,8 +96,11 @@ impl AppState {
             if !available_midi_ports.is_empty() { Some(0) } else { None }
         };
 
-        let connection_address = config.last_controller_address
-            .unwrap_or_else(|| "localhost:7348".to_string());
+        let connection_address = config.last_controller_address.clone()
+            .unwrap_or_else(|| "127.0.0.1:7348".to_string());
+
+        let connection_password = config.last_controller_password.clone()
+            .unwrap_or_else(|| "password".to_string());
 
         Ok(Self {
             presets,
@@ -113,6 +118,7 @@ impl AppState {
             midi_connection_active: false,
             connection_state: ConnectionState::Disconnected,
             connection_address,
+            connection_password,
             new_preset_name: String::new(),
             new_preset_desc: String::new(),
             show_new_preset_modal: false,
@@ -320,7 +326,7 @@ impl AppState {
             });
     }
 
-    fn render_button_panel(&mut self, ui: &Ui) {
+    fn render_button_panel(&mut self, ui: &Ui, ui_tx: &mpsc::UnboundedSender<ActionCommand>) {
         ui.child_window("##button_panel")
             .size([0.0, 0.0])
             .border(true)
@@ -330,34 +336,58 @@ impl AppState {
 
                 ui.text("Controller Address:");
                 ui.input_text("##address", &mut self.connection_address).build();
+                ui.text("Controller Password:");
+                ui.input_text("##password", &mut self.connection_password).build();
                 
-                if ui.button("Connect") {
-                    self.connected = true;
-                    self.midi_log.add("Connected to controller".to_string());
-                }
+                let connecting = self.connection_state == ConnectionState::Connecting;
+
+                // Connect button is disabled while connecting
+                ui.disabled(connecting, || {
+                    if ui.button("Connect") {
+                        // Only send connect command if not already connecting
+                        self.connection_state = ConnectionState::Connecting;
+                        self.midi_log.add(format!("Connecting to {}", self.connection_address));
+
+                        let addr = self.connection_address.clone();
+                        let pass = self.connection_password.clone();
+                        let _ = self.action_tx.send(ActionCommand::Connect(addr, pass));
+                    }
+                });
 
                 ui.separator();
 
-                if self.connected {
-                    ui.child_window("##buttons")
-                        .size([0.0, 0.0])
-                        .border(true)
-                        .build(|| {
-                            for button in &self.buttons {
-                                if ui.selectable(&format!("{} ({})", button.name, button.id)) {
+                match &self.connection_state {
+                    ConnectionState::Connected => {
+                        ui.child_window("##buttons")
+                            .size([0.0, 0.0])
+                            .border(true)
+                            .build(|| {
+                                for button in &self.buttons {
+                                    if ui.selectable(&format!("{} ({})", button.name, button.id)) {
+                                        // Optional: handle button selection
+                                    }
+                                    if ui.is_item_hovered() {
+                                        ui.tooltip_text("Drag to preset area");
+                                    }
                                 }
-                                
-                                if ui.is_item_hovered() {
-                                    ui.tooltip_text("Drag to preset area");
+
+                                if self.buttons.is_empty() {
+                                    ui.text_disabled("No buttons loaded");
+                                } else {
+                                    // Auto-scroll to the last button for live updates
+                                    ui.set_scroll_here_y_with_ratio(1.0);
                                 }
-                            }
-                            
-                            if self.buttons.is_empty() {
-                                ui.text_disabled("No buttons loaded");
-                            }
-                        });
-                } else {
-                    ui.text_disabled("Not connected");
+                            });
+                    }
+                    ConnectionState::Connecting => {
+                        ui.text_disabled("Connecting...");
+                    }
+                    ConnectionState::Disconnected => {
+                        ui.text_disabled("Not connected");
+                    }
+                    ConnectionState::Error(err) => {
+                        ui.text_colored([1.0, 0.2, 0.2, 1.0], &format!("Connection error: {}", err));
+                    }
                 }
             });
     }
@@ -377,11 +407,15 @@ fn run() -> Result<()> {
         println!("  {}: {}", i, port_name);
     }
 
-    let (action_tx, action_rx) = mpsc::unbounded_channel();
-    let action_rx_ui = action_tx.clone();
+    // UI sends commands to executor:
+    let (action_tx, action_rx) = mpsc::unbounded_channel::<ActionCommand>();
 
+    // Executor sends results back to UI:
+    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<ActionCommand>();
+
+    let ui_tx_for_executor = ui_tx.clone();
     tokio::spawn(async move {
-        let mut executor = ActionExecutor::new(action_rx);
+        let mut executor = ActionExecutor::new(action_rx, ui_tx_for_executor);
         executor.run().await;
     });
 
@@ -538,12 +572,13 @@ fn run() -> Result<()> {
                     .build(|| {
                         if let Ok(mut state) = state.lock() {
                             // Process any connection results
-                            while let Ok(cmd) = action_rx_ui.try_recv() {
+                            while let Ok(cmd) = ui_rx.try_recv() {
                                 match cmd {
                                     ActionCommand::ConnectionSuccess(buttons) => {
+                                        let button_count = buttons.len();
                                         state.buttons = buttons;
                                         state.connection_state = ConnectionState::Connected;
-                                        state.midi_log.add(format!("Connected! Loaded {} buttons", state.buttons.len()));
+                                        state.midi_log.add(format!("Connected! Loaded {} buttons", button_count));
                                     }
                                     ActionCommand::ConnectionError(err) => {
                                         state.connection_state = ConnectionState::Error(err.clone());
@@ -557,7 +592,7 @@ fn run() -> Result<()> {
                             ui.same_line();
                             state.render_preset_panel(&ui);
                             ui.same_line();
-                            state.render_button_panel(&ui);
+                            state.render_button_panel(&ui, &ui_tx);
                         }
                     });
 

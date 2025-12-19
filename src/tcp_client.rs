@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::Duration;
 
 use crate::models::Button;
 
@@ -21,6 +22,7 @@ impl LiveParser {
     }
 
     pub fn feed(&mut self, data: &[u8]) -> Option<LiveMessage> {
+        println!("Received TCP data: {:?}", String::from_utf8_lossy(data));
         self.buffer.extend_from_slice(data);
 
         // Look for CRLF
@@ -92,12 +94,23 @@ pub struct LightingControllerClient {
 }
 
 impl LightingControllerClient {
-    pub async fn connect(addr: &str) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        Ok(Self {
-            stream,
-            parser: LiveParser::new(),
-        })
+    pub async fn connect(addr: &str, password: &str) -> Result<Self> {
+        let mut stream = TcpStream::connect(addr).await?;
+        let mut parser = LiveParser::new();
+
+        // Send HELLO immediately
+        let hello = format!("HELLO|LightingMIDI|{}\r\n", password);
+        stream.write_all(hello.as_bytes()).await?;
+
+        // Wait for HELLO response
+        let mut buf = [0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        if resp.trim() != "HELLO" {
+            return Err(anyhow!("HELLO failed: {}", resp));
+        }
+
+        Ok(Self { stream, parser })
     }
 
     async fn send(&mut self, cmd: &str) -> Result<()> {

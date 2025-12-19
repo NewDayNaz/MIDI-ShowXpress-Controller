@@ -1,6 +1,7 @@
 use anyhow::Result;
-use std::time::Duration;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::Duration;
 
 use crate::models::{Button, ButtonAction, ButtonActionType, MidiMessage, Preset};
 use crate::tcp_client::LightingControllerClient;
@@ -10,21 +11,21 @@ pub enum ActionCommand {
     ExecuteSingle(ButtonAction),
     ConnectionSuccess(Vec<Button>),
     ConnectionError(String),
+    Connect(String, String),
 }
 
 pub struct ActionExecutor {
-    client: Option<LightingControllerClient>,
+    client: Option<Arc<Mutex<LightingControllerClient>>>,
     rx: mpsc::UnboundedReceiver<ActionCommand>,
+    tx: mpsc::UnboundedSender<ActionCommand>,
 }
 
 impl ActionExecutor {
-    pub fn new(rx: mpsc::UnboundedReceiver<ActionCommand>) -> Self {
-        Self { client: None, rx }
-    }
-
-    pub async fn connect(&mut self, addr: &str) -> Result<()> {
-        self.client = Some(LightingControllerClient::connect(addr).await?);
-        Ok(())
+    pub fn new(
+        rx: mpsc::UnboundedReceiver<ActionCommand>,
+        tx: mpsc::UnboundedSender<ActionCommand>,
+    ) -> Self {
+        Self { client: None, rx, tx }
     }
 
     pub async fn run(&mut self) {
@@ -37,13 +38,61 @@ impl ActionExecutor {
 
     async fn handle_command(&mut self, cmd: ActionCommand) -> Result<()> {
         match cmd {
+            ActionCommand::Connect(addr, password) => {
+                match LightingControllerClient::connect(&addr, &password).await {
+                    Ok(client) => {
+                        let client_ref = Arc::new(Mutex::new(client));
+                        self.client = Some(Arc::clone(&client_ref));
+
+                        let tx_clone = self.tx.clone();
+                        let client_ref_clone = Arc::clone(&client_ref);
+
+                        // Immediately fetch button list
+                        match client_ref_clone.lock().await.button_list().await {
+                            Ok(buttons) => {
+                                let _ = tx_clone.send(ActionCommand::ConnectionSuccess(buttons));
+                            }
+                            Err(e) => {
+                                let _ = tx_clone.send(ActionCommand::ConnectionError(e.to_string()));
+                            }
+                        }
+
+                        // Start periodic refresh
+                        tokio::spawn(async move {
+                            loop {
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+
+                                let mut client_guard = client_ref.lock().await;
+                                if let Err(e) = client_guard.button_list().await
+                                    .map(|buttons| {
+                                        let _ = tx_clone.send(ActionCommand::ConnectionSuccess(buttons));
+                                    })
+                                {
+                                    let _ = tx_clone.send(ActionCommand::ConnectionError(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let _ = self.tx.send(ActionCommand::ConnectionError(e.to_string()));
+                    }
+                }
+            }
+
             ActionCommand::ExecutePreset(preset) => {
                 self.execute_actions(&preset.actions).await?;
             }
+
             ActionCommand::ExecuteSingle(action) => {
                 self.execute_action(&action).await?;
             }
+
+            ActionCommand::ConnectionSuccess(_) | ActionCommand::ConnectionError(_) => {
+                println!("ConSucc");
+                // Handled by UI thread
+            }
         }
+
         Ok(())
     }
 
@@ -52,7 +101,6 @@ impl ActionExecutor {
             if action.delay_secs > 0.0 {
                 tokio::time::sleep(Duration::from_secs_f32(action.delay_secs)).await;
             }
-
             self.execute_action(action).await?;
         }
         Ok(())
@@ -61,8 +109,10 @@ impl ActionExecutor {
     async fn execute_action(&mut self, action: &ButtonAction) -> Result<()> {
         let client = self
             .client
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+
+        let mut client = client.lock().await;
 
         match action.action {
             ButtonActionType::Press => client.button_press(action.button_id).await?,
@@ -80,10 +130,7 @@ pub struct PresetMatcher {
 }
 
 impl PresetMatcher {
-    pub fn new(
-        presets: Vec<Preset>,
-        action_tx: mpsc::UnboundedSender<ActionCommand>,
-    ) -> Self {
+    pub fn new(presets: Vec<Preset>, action_tx: mpsc::UnboundedSender<ActionCommand>) -> Self {
         Self { presets, action_tx }
     }
 

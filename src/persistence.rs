@@ -61,13 +61,15 @@ impl PresetStorage {
 pub struct AppConfig {
     pub last_midi_port: Option<String>,
     pub last_controller_address: Option<String>,
+    pub last_controller_password: Option<String>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             last_midi_port: None,
-            last_controller_address: Some("localhost:7348".to_string()),
+            last_controller_address: Some("127.0.0.1:7348".to_string()),
+            last_controller_password: Some("password".to_string()),
         }
     }
 }
