@@ -108,9 +108,16 @@ impl AppState {
         let last_action_type = config.last_action_type
             .unwrap_or(ButtonActionType::Toggle);
 
+        // Select the first preset if any exist
+        let selected_preset = if presets.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+
         Ok(Self {
             presets,
-            selected_preset: None,
+            selected_preset,
             buttons: Vec::new(),
             midi_log: MidiLog::new(100),
             midi_messages: HashMap::new(),
@@ -809,6 +816,8 @@ fn run() -> Result<()> {
                 ui.window("Lighting MIDI Controller")
                     .size([1200.0, 800.0], Condition::FirstUseEver)
                     .position([0.0, 0.0], Condition::FirstUseEver)
+                    .movable(false)
+                    .resizable(false)
                     .build(|| {
                         if let Ok(mut state) = state.lock() {
                             // Process any connection results
