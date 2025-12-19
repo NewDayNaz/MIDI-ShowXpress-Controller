@@ -537,7 +537,7 @@ impl AppState {
             .size([0.0, 0.0])
             .border(true)
             .build(|| {
-                ui.text_colored([0.8, 1.0, 1.0, 1.0], "Lighting Buttons");
+                ui.text_colored([0.8, 1.0, 1.0, 1.0], "Lighting Controller");
                 ui.separator();
 
                 ui.text("Controller Address:");
@@ -596,13 +596,22 @@ impl AppState {
                                         let action_type = self.last_action_type;
                                         // Now we can mutably borrow self (button reference is dropped)
                                         if let Some(preset_idx) = preset_idx_opt {
-                                            let action = ButtonAction {
-                                                button_name,
-                                                action: action_type,
-                                                delay_secs: 0.0,
-                                            };
-                                            self.presets[preset_idx].actions.push(action);
-                                            let _ = self.save_presets();
+                                            // Check for duplicate action (same button name and action type)
+                                            let is_duplicate = self.presets[preset_idx].actions.iter()
+                                                .any(|existing_action| {
+                                                    existing_action.button_name == button_name
+                                                        && existing_action.action == action_type
+                                                });
+                                            
+                                            if !is_duplicate {
+                                                let action = ButtonAction {
+                                                    button_name,
+                                                    action: action_type,
+                                                    delay_secs: 0.0,
+                                                };
+                                                self.presets[preset_idx].actions.push(action);
+                                                let _ = self.save_presets();
+                                            }
                                         }
                                     }
                                     
