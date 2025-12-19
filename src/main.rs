@@ -218,9 +218,6 @@ impl AppState {
                                     for msg in messages {
                                         ui.text(msg);
                                         
-                                        if ui.is_item_hovered() {
-                                            ui.tooltip_text("Drag to preset area");
-                                        }
                                     }
                                 }).is_some() {}
                             }
@@ -285,6 +282,31 @@ impl AppState {
                     
                     ui.text_colored([0.8, 1.0, 0.8, 1.0], &preset.name);
                     ui.text_disabled(&preset.description);
+                    
+                    ui.separator();
+                    
+                    // Run preset button - disabled if not connected
+                    let is_connected = self.connection_state == ConnectionState::Connected;
+                    let has_actions = !preset.actions.is_empty();
+                    let can_run = is_connected && has_actions;
+                    
+                    ui.disabled(!can_run, || {
+                        if ui.button("Run Preset") {
+                            let preset_clone = preset.clone();
+                            let _ = self.action_tx.send(ActionCommand::ExecutePreset(preset_clone));
+                            self.midi_log.add(format!("Manually running preset: {}", preset.name));
+                        }
+                    });
+                    
+                    // Show tooltip when hovering over disabled button
+                    if ui.is_item_hovered() && !can_run {
+                        if !is_connected {
+                            ui.tooltip_text("Connect to controller to run presets");
+                        } else if !has_actions {
+                            ui.tooltip_text("Add actions to this preset to run it");
+                        }
+                    }
+                    
                     ui.separator();
 
                     ui.text("Triggers:");
@@ -299,7 +321,7 @@ impl AppState {
                                 }
                             }
                             if preset.triggers.is_empty() {
-                                ui.text_disabled("Drag MIDI messages here");
+                                ui.text_disabled("No triggers configured");
                             }
                         });
 
@@ -338,31 +360,8 @@ impl AppState {
                         .size([0.0, 0.0])
                         .border(true)
                         .build(|| {
-                            // Make this area a drop target
-                            if let Some(target) = ui.drag_drop_target() {
-                                if let Some(Ok(payload)) = target.accept_payload::<usize, _>("BUTTON", DragDropFlags::empty()) {
-                                    let button_idx = payload.data;
-                                    // Drop the preset borrow before mutable operations
-                                    let button_name = if button_idx < self.buttons.len() {
-                                        self.buttons[button_idx].name.clone()
-                                    } else {
-                                        String::new()
-                                    };
-                                    if !button_name.is_empty() {
-                                        let action = ButtonAction {
-                                            button_name,
-                                            action: self.last_action_type,
-                                            delay_secs: 0.0,
-                                        };
-                                        self.presets[preset_idx].actions.push(action);
-                                        let _ = self.save_presets();
-                                    }
-                                }
-                                target.pop();
-                            }
-                            
                             // Display actions - use indices to avoid long-lived borrows
-                            const MAX_NAME_LENGTH: usize = 35;
+                            const MAX_NAME_LENGTH: usize = 34;
                             let actions_len = self.presets[preset_idx].actions.len();
                             for i in 0..actions_len {
                                 // Collect data we need first, then drop the borrow
@@ -370,7 +369,7 @@ impl AppState {
                                     let action = &self.presets[preset_idx].actions[i];
                                     let button_name_len = action.button_name.len();
                                     let truncated_name = if button_name_len > MAX_NAME_LENGTH {
-                                        format!("{}..", &action.button_name[..MAX_NAME_LENGTH])
+                                        format!("{}", &action.button_name[..MAX_NAME_LENGTH])
                                     } else {
                                         action.button_name.clone()
                                     };
@@ -424,7 +423,7 @@ impl AppState {
                                 }
                             }
                             if self.presets[preset_idx].actions.is_empty() {
-                                ui.text_disabled("Drag buttons here or double-click a button");
+                                ui.text_disabled("Double-click a button to add it here");
                             }
                         });
                 }
@@ -590,11 +589,6 @@ impl AppState {
                                         // Handle single click if needed
                                     }
                                     
-                                    // Set up drag source - call after the item
-                                    if let Some(tooltip) = ui.drag_drop_source_config("BUTTON").begin_payload(button_idx) {
-                                        tooltip.end();
-                                    }
-                                    
                                     // Handle double-click - collect values first to avoid borrow conflicts
                                     if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
                                         let preset_idx_opt = self.selected_preset;
@@ -613,7 +607,7 @@ impl AppState {
                                     }
                                     
                                     if ui.is_item_hovered() {
-                                        ui.tooltip_text("Double-click or drag to preset actions");
+                                        ui.tooltip_text("Double-click to add to preset actions");
                                     }
                                 }
 
