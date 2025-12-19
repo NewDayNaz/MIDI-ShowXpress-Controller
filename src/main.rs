@@ -566,17 +566,29 @@ impl AppState {
                 }
                 
                 let connecting = self.connection_state == ConnectionState::Connecting;
+                let is_connected = self.connection_state == ConnectionState::Connected;
 
-                // Connect button is disabled while connecting
+                // Connect/Disconnect button - disabled while connecting
                 ui.disabled(connecting, || {
-                    if ui.button("Connect") {
-                        // Only send connect command if not already connecting
-                        self.connection_state = ConnectionState::Connecting;
-                        self.midi_log.add(format!("Connecting to {}", self.connection_address));
+                    if is_connected {
+                        // Show Disconnect button when connected
+                        if ui.button("Disconnect") {
+                            self.connection_state = ConnectionState::Disconnected;
+                            self.buttons.clear();
+                            self.midi_log.add("Disconnected from controller".to_string());
+                            let _ = self.action_tx.send(ActionCommand::Disconnect);
+                        }
+                    } else {
+                        // Show Connect button when disconnected
+                        if ui.button("Connect") {
+                            // Only send connect command if not already connecting
+                            self.connection_state = ConnectionState::Connecting;
+                            self.midi_log.add(format!("Connecting to {}", self.connection_address));
 
-                        let addr = self.connection_address.clone();
-                        let pass = self.connection_password.clone();
-                        let _ = self.action_tx.send(ActionCommand::Connect(addr, pass));
+                            let addr = self.connection_address.clone();
+                            let pass = self.connection_password.clone();
+                            let _ = self.action_tx.send(ActionCommand::Connect(addr, pass));
+                        }
                     }
                 });
 
@@ -843,9 +855,14 @@ fn run() -> Result<()> {
                                             state.buttons_just_updated = true;
                                         }
                                         state.buttons = buttons;
-                                        state.connection_state = ConnectionState::Connected;
-                                        if buttons_changed {
-                                            state.midi_log.add(format!("Connected! Loaded {} buttons", button_count));
+                                        // If button list is empty, we're disconnected (sent by Disconnect command)
+                                        if button_count == 0 {
+                                            state.connection_state = ConnectionState::Disconnected;
+                                        } else {
+                                            state.connection_state = ConnectionState::Connected;
+                                            if buttons_changed {
+                                                state.midi_log.add(format!("Connected! Loaded {} buttons", button_count));
+                                            }
                                         }
                                     }
                                     ActionCommand::ConnectionError(err) => {

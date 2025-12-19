@@ -12,6 +12,7 @@ pub enum ActionCommand {
     ConnectionSuccess(Vec<Button>),
     ConnectionError(String),
     Connect(String, String),
+    Disconnect,
 }
 
 pub struct ActionExecutor {
@@ -87,6 +88,13 @@ impl ActionExecutor {
 
             ActionCommand::ExecuteSingle(action) => {
                 self.execute_action(&action).await?;
+            }
+
+            ActionCommand::Disconnect => {
+                // Clear the client connection
+                self.client = None;
+                // Notify UI that we've disconnected
+                let _ = self.tx.send(ActionCommand::ConnectionSuccess(Vec::new()));
             }
 
             ActionCommand::ConnectionSuccess(_) | ActionCommand::ConnectionError(_) => {
