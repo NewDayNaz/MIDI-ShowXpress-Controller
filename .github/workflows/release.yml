@@ -15,7 +15,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
-          - target: x86_64-unknown-linux-musl
+          - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
           - target: x86_64-apple-darwin
@@ -30,43 +30,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       
-      - name: Install musl tools and build dependencies (Linux)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+      - name: Install build dependencies (Linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools musl-dev g++ cmake build-essential pkg-config libfontconfig1-dev libasound2-dev
-          # Create symlink for musl C++ compiler
-          sudo ln -sf /usr/bin/g++ /usr/bin/x86_64-linux-musl-g++
-          # Create pkg-config wrapper that allows cross-compilation
-          echo '#!/bin/bash' | sudo tee /usr/local/bin/x86_64-linux-musl-pkg-config > /dev/null
-          echo 'export PKG_CONFIG_ALLOW_CROSS=1' | sudo tee -a /usr/local/bin/x86_64-linux-musl-pkg-config > /dev/null
-          echo 'exec /usr/bin/pkg-config "$@"' | sudo tee -a /usr/local/bin/x86_64-linux-musl-pkg-config > /dev/null
-          sudo chmod +x /usr/local/bin/x86_64-linux-musl-pkg-config
-          # Verify ALSA library location and create symlink if needed
-          if [ -f /usr/lib/x86_64-linux-gnu/libasound.so.2 ] && [ ! -f /usr/lib/x86_64-linux-gnu/libasound.so ]; then
-            sudo ln -s /usr/lib/x86_64-linux-gnu/libasound.so.2 /usr/lib/x86_64-linux-gnu/libasound.so
-          fi
-          # Create .cargo/config.toml to configure linker for musl
-          mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [target.x86_64-unknown-linux-musl]
-          linker = "x86_64-linux-musl-gcc"
-          rustflags = [
-            "-C", "link-arg=-L/usr/lib/x86_64-linux-gnu",
-            "-C", "link-arg=-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
-          ]
-          EOF
-          # Verify pkg-config can find ALSA
-          x86_64-linux-musl-pkg-config --libs alsa || echo "pkg-config test failed"
+          sudo apt-get install -y g++ cmake build-essential pkg-config libfontconfig1-dev libasound2-dev
       
       - name: Build release
-        env:
-          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
-          CXX_x86_64_unknown_linux_musl: x86_64-linux-musl-g++
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_ALLOW_CROSS_x86_64_unknown_linux_musl: 1
-          PKG_CONFIG_x86_64_unknown_linux_musl: x86_64-linux-musl-pkg-config
-          PKG_CONFIG_PATH_x86_64_unknown_linux_musl: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig
         run: cargo build --release --target ${{ matrix.target }}
       
       - name: Prepare archive (Windows)
