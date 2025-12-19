@@ -109,30 +109,6 @@ cargo build --release
 # The executable will be in target/release/midi_showxpress_controller.exe
 ```
 
-## Technical Details
-
-- **Language**: Rust (Edition 2021)
-- **GUI Framework**: imgui-rs with wgpu rendering
-- **MIDI Library**: midir
-- **Network Protocol**: Custom TCP protocol compatible with ShowXpress TLC (The Lighting Controller)
-- **Data Format**: JSON for preset storage
-- **Async Runtime**: Tokio
-
-### Project Structure
-
-```
-MIDI-ShowXpress-Controller/
-├── src/
-│   ├── main.rs              # Main application entry point and UI
-│   ├── models.rs            # Data models (Preset, ButtonAction, etc.)
-│   ├── persistence.rs       # Configuration and preset storage
-│   ├── tcp_client.rs        # ShowXpress TCP client implementation
-│   └── action_executor.rs   # Preset action execution engine
-├── Cargo.toml               # Rust project configuration
-├── build.rs                 # Build script for Windows icon
-└── README.md                # This file
-```
-
 ## Known Limitations
 
 - Requires ShowXpress to be running with TCP server enabled
