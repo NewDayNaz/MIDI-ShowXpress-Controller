@@ -19,6 +19,8 @@ A powerful bridge application that enables you to control ShowXpress V9 lighting
 
 ## Features
 
+![screenshot](https://media.discordapp.net/attachments/555675899262009345/1451519801603129507/image.png?ex=694678a8&is=69452728&hm=a8428079a6ad566be7b817fb692f33195f691603cc31189f789550917a662e03&=&format=webp&quality=lossless&width=1387&height=924)
+
 ### MIDI Integration
 - **Full MIDI Support**: Receive and monitor MIDI messages from any MIDI device (Note On/Off, Control Change)
 - **Real-time Monitoring**: Live MIDI message display with timestamped console log
