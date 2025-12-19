@@ -169,7 +169,7 @@ impl AppState {
         // Clone early for storage, keep original for other uses
         let msg_for_storage = msg.clone();
         let display = msg.display_name();
-        self.midi_log.add(format!("→ {}", display));
+        self.midi_log.add(format!("{}", display));
 
         let category = match &msg {
             MidiMessage::NoteOn(_) => "Note On",
@@ -199,7 +199,6 @@ impl AppState {
 
         if let Ok(matcher) = self.preset_matcher.lock() {
             matcher.handle_midi(&msg);
-            self.midi_log.add(format!("✓ Matched presets"));
         }
     }
 
@@ -431,6 +430,15 @@ impl AppState {
                     ui.separator();
 
                     ui.text("Triggers:");
+                    ui.same_line();
+                    let preset_idx = idx; // Copy the index to avoid borrowing issues
+                    let has_triggers = !self.presets[preset_idx].triggers.is_empty();
+                    ui.disabled(!has_triggers, || {
+                        if ui.small_button("Clear Triggers") {
+                            self.presets[preset_idx].triggers.clear();
+                            let _ = self.save_presets();
+                        }
+                    });
                     let preset_idx = idx; // Copy the index to avoid borrowing issues
                     ui.child_window("##triggers")
                         .size([0.0, 150.0])
