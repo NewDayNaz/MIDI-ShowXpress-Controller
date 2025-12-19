@@ -300,7 +300,7 @@ impl AppState {
                                             let b: f32 = 0.2f32 * intensity;
                                             let a: f32 = 1.0f32;
                                             let flash_color = [r, g, b, a];
-                                            let _style = ui.push_style_color(StyleColor::Text, flash_color.into());
+                                            let _style = ui.push_style_color(StyleColor::Text, flash_color);
                                             if ui.selectable(&display) {
                                                 // Handle single click if needed
                                             }
