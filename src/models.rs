@@ -40,13 +40,11 @@ impl MidiTrigger {
                 channel: n.channel,
                 note: n.note,
             }),
-            MidiMessage::ControlChange { channel, cc, .. } => {
-                Some(MidiTrigger::ControlChange {
-                    channel: *channel,
-                    cc: *cc,
-                    value: None,
-                })
-            }
+            MidiMessage::ControlChange { channel, cc, .. } => Some(MidiTrigger::ControlChange {
+                channel: *channel,
+                cc: *cc,
+                value: None,
+            }),
         }
     }
 
@@ -96,8 +94,7 @@ pub enum ButtonActionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ButtonAction {
-    pub button_id: u32,
-    pub button_name: String,
+    pub button_name: String,  // now the primary identifier
     pub action: ButtonActionType,
     pub delay_secs: f32,
 }
@@ -128,10 +125,8 @@ impl MidiMessage {
 
         match message_type {
             0x90 => {
-                // Note On
                 let velocity = data[2];
                 if velocity == 0 {
-                    // Velocity 0 is Note Off
                     Some(MidiMessage::NoteOff(MidiNote {
                         channel,
                         note: data[1],
@@ -145,31 +140,23 @@ impl MidiMessage {
                     }))
                 }
             }
-            0x80 => {
-                // Note Off
-                Some(MidiMessage::NoteOff(MidiNote {
-                    channel,
-                    note: data[1],
-                    velocity: data[2],
-                }))
-            }
-            0xB0 => {
-                // Control Change
-                Some(MidiMessage::ControlChange {
-                    channel,
-                    cc: data[1],
-                    value: data[2],
-                })
-            }
+            0x80 => Some(MidiMessage::NoteOff(MidiNote {
+                channel,
+                note: data[1],
+                velocity: data[2],
+            })),
+            0xB0 => Some(MidiMessage::ControlChange {
+                channel,
+                cc: data[1],
+                value: data[2],
+            }),
             _ => None,
         }
     }
 
     pub fn display_name(&self) -> String {
         match self {
-            MidiMessage::NoteOn(n) => {
-                format!("Note On Ch{} N{} V{}", n.channel, n.note, n.velocity)
-            }
+            MidiMessage::NoteOn(n) => format!("Note On Ch{} N{} V{}", n.channel, n.note, n.velocity),
             MidiMessage::NoteOff(n) => {
                 format!("Note Off Ch{} N{} V{}", n.channel, n.note, n.velocity)
             }
@@ -182,8 +169,8 @@ impl MidiMessage {
 
 #[derive(Debug, Clone)]
 pub struct Button {
-    pub id: u32,
-    pub name: String,
+    pub id: u32,        // internal ID
+    pub name: String,   // used for TLC commands
 }
 
 pub struct MidiLearnState {
@@ -210,8 +197,7 @@ impl MidiLearnState {
 }
 
 fn note_name(note: u8) -> &'static str {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
+    const NAMES: [&str; 12] =
+        ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     NAMES[(note % 12) as usize]
 }

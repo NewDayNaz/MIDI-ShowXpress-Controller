@@ -63,7 +63,9 @@ impl ActionExecutor {
                                 tokio::time::sleep(Duration::from_secs(10)).await;
 
                                 let mut client_guard = client_ref.lock().await;
-                                if let Err(e) = client_guard.button_list().await
+                                if let Err(e) = client_guard
+                                    .button_list()
+                                    .await
                                     .map(|buttons| {
                                         let _ = tx_clone.send(ActionCommand::ConnectionSuccess(buttons));
                                     })
@@ -88,8 +90,7 @@ impl ActionExecutor {
             }
 
             ActionCommand::ConnectionSuccess(_) | ActionCommand::ConnectionError(_) => {
-                println!("ConSucc");
-                // Handled by UI thread
+                println!("Connection event handled by UI thread");
             }
         }
 
@@ -114,10 +115,13 @@ impl ActionExecutor {
 
         let mut client = client.lock().await;
 
+        // Use button_name instead of numeric ID
+        let button_name = &action.button_name;
+
         match action.action {
-            ButtonActionType::Press => client.button_press(action.button_id).await?,
-            ButtonActionType::Release => client.button_release(action.button_id).await?,
-            ButtonActionType::Toggle => client.button_toggle(action.button_id).await?,
+            ButtonActionType::Press => client.button_press(button_name).await?,
+            ButtonActionType::Release => client.button_release(button_name).await?,
+            ButtonActionType::Toggle => client.button_toggle(button_name).await?,
         }
 
         Ok(())

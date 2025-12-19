@@ -1,99 +1,173 @@
 use anyhow::{anyhow, Result};
+use roxmltree::Document;
+use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::Duration;
+use tokio::time::{timeout, Duration};
 
 use crate::models::Button;
 
+/// All messages TLC can send to the external client
+#[derive(Debug)]
 pub enum LiveMessage {
-    Ok,
+    Connected(String),
     Error(String),
-    Event(String),
+    BeatOn,
+    BeatOff,
+    ButtonPress(String),
+    ButtonRelease(String),
+    FaderChange { index: u32, value: i32 },
+    InterfaceChange(String),
+    Bpm(f32),
     ButtonList(Vec<Button>),
+    Unknown(String),
+    Ok,
 }
 
+/// Parser for TCP messages from TLC
 pub struct LiveParser {
     buffer: Vec<u8>,
+    messages: VecDeque<LiveMessage>,
 }
 
 impl LiveParser {
     pub fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self {
+            buffer: Vec::new(),
+            messages: VecDeque::new(),
+        }
     }
 
-    pub fn feed(&mut self, data: &[u8]) -> Option<LiveMessage> {
-        println!("Received TCP data: {:?}", String::from_utf8_lossy(data));
+    /// Feed raw TCP data into parser
+    pub fn feed(&mut self, data: &[u8]) {
         self.buffer.extend_from_slice(data);
 
-        // Look for CRLF
-        let pos = self
-            .buffer
-            .windows(2)
-            .position(|w| w == b"\r\n")?;
+        while let Some(pos) = self.buffer.windows(2).position(|w| w == b"\r\n") {
+            let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
+            self.buffer.drain(..pos + 2);
+            self.parse_line(&line);
+        }
+    }
 
-        let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
-        let remainder = self.buffer.split_off(pos + 2);
-        self.buffer = remainder;
+    fn parse_line(&mut self, line: &str) {
+        const SEPARATOR: char = '|';
+
+        if line.starts_with("HELLO") {
+            let app_name = line.split(SEPARATOR).nth(1).unwrap_or("").to_string();
+            self.messages.push_back(LiveMessage::Connected(app_name));
+            return;
+        }
+
+        if line.starts_with("ERROR|") {
+            self.messages.push_back(LiveMessage::Error(line[6..].to_string()));
+            return;
+        }
+
+        if line.starts_with("BEAT_ON") {
+            self.messages.push_back(LiveMessage::BeatOn);
+            return;
+        }
+
+        if line.starts_with("BEAT_OFF") {
+            self.messages.push_back(LiveMessage::BeatOff);
+            return;
+        }
 
         if line.starts_with("BUTTON_LIST|") {
-            let len: usize = line.split('|').nth(1)?.parse().ok()?;
-            
-            // Wait for enough data
-            if self.buffer.len() < len + 2 {
-                // Put the line back and wait
-                let mut temp = format!("{}\r\n", line).into_bytes();
-                temp.extend_from_slice(&self.buffer);
-                self.buffer = temp;
-                return None;
+            if let Some(len_str) = line.split(SEPARATOR).nth(1) {
+                if let Ok(len) = len_str.parse::<usize>() {
+                    if self.buffer.len() >= len + 2 {
+                        let xml_bytes: Vec<u8> = self.buffer.drain(..len).collect();
+                        let _ = self.buffer.drain(..2); // trailing CRLF
+                        self.messages.push_back(LiveMessage::ButtonList(parse_buttons(&xml_bytes)));
+                        return;
+                    }
+                }
             }
+            // Not enough data yet, wait for more
+            return;
+        }
 
-            let xml = self.buffer.drain(..len).collect::<Vec<_>>();
-            let _ = self.buffer.drain(..2); // trailing CRLF
-            return Some(LiveMessage::ButtonList(parse_buttons(&xml)));
+        if line.starts_with("BUTTON_PRESS|") {
+            let name = line.split(SEPARATOR).nth(1).unwrap_or("").to_string();
+            self.messages.push_back(LiveMessage::ButtonPress(name));
+            return;
+        }
+
+        if line.starts_with("BUTTON_RELEASE|") {
+            let name = line.split(SEPARATOR).nth(1).unwrap_or("").to_string();
+            self.messages.push_back(LiveMessage::ButtonRelease(name));
+            return;
+        }
+
+        if line.starts_with("FADER_CHANGE|") {
+            let parts: Vec<_> = line.split(SEPARATOR).collect();
+            if let (Some(idx), Some(val)) = (parts.get(1), parts.get(2)) {
+                if let (Ok(idx), Ok(val)) = (idx.parse(), val.parse()) {
+                    self.messages.push_back(LiveMessage::FaderChange { index: idx, value: val });
+                    return;
+                }
+            }
+        }
+
+        if line.starts_with("INTERFACE_CHANGE|") {
+            let data = line.split(SEPARATOR).nth(1).unwrap_or("").to_string();
+            self.messages.push_back(LiveMessage::InterfaceChange(data));
+            return;
+        }
+
+        if line.starts_with("BPM|") {
+            if let Ok(bpm) = line[4..].parse::<f32>() {
+                self.messages.push_back(LiveMessage::Bpm(bpm));
+                return;
+            }
         }
 
         if line == "OK" {
-            return Some(LiveMessage::Ok);
-        }
-        if line.starts_with("ERROR|") {
-            return Some(LiveMessage::Error(line[6..].to_string()));
-        }
-        if line.starts_with("EVENT|") {
-            return Some(LiveMessage::Event(line.to_string()));
+            self.messages.push_back(LiveMessage::Ok);
+            return;
         }
 
-        None
+        self.messages.push_back(LiveMessage::Unknown(line.to_string()));
+    }
+
+    /// Return the next parsed message, if any
+    pub fn next_message(&mut self) -> Option<LiveMessage> {
+        self.messages.pop_front()
     }
 }
 
+/// Parse BUTTON_LIST XML into Button structs
 fn parse_buttons(xml: &[u8]) -> Vec<Button> {
     let xml_str = match std::str::from_utf8(xml) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
 
-    let doc = match roxmltree::Document::parse(xml_str) {
+    let doc = match Document::parse(xml_str) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
 
     doc.descendants()
-        .filter(|n| n.has_tag_name("Button"))
+        .filter(|n| n.has_tag_name("button"))
         .filter_map(|n| {
             Some(Button {
-                id: n.attribute("id")?.parse().ok()?,
-                name: n.attribute("name")?.to_string(),
+                id: n.attribute("index")?.parse().ok()?,
+                name: n.text().unwrap_or("").trim().to_string(),
             })
         })
         .collect()
 }
 
+/// TCP client for Lighting Controller
 pub struct LightingControllerClient {
     stream: TcpStream,
     parser: LiveParser,
 }
 
 impl LightingControllerClient {
+    /// Connect and perform HELLO handshake
     pub async fn connect(addr: &str, password: &str) -> Result<Self> {
         let mut stream = TcpStream::connect(addr).await?;
         let mut parser = LiveParser::new();
@@ -102,12 +176,26 @@ impl LightingControllerClient {
         let hello = format!("HELLO|LightingMIDI|{}\r\n", password);
         stream.write_all(hello.as_bytes()).await?;
 
-        // Wait for HELLO response
-        let mut buf = [0u8; 1024];
-        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
-        let resp = String::from_utf8_lossy(&buf[..n]);
-        if resp.trim() != "HELLO" {
-            return Err(anyhow!("HELLO failed: {}", resp));
+        // Wait for HELLO or ERROR
+        loop {
+            let mut buf = [0u8; 1024];
+            let n = timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
+            if n == 0 {
+                return Err(anyhow!("Connection closed"));
+            }
+
+            parser.feed(&buf[..n]);
+            while let Some(msg) = parser.next_message() {
+                match msg {
+                    LiveMessage::Connected(_) => break,
+                    LiveMessage::Error(e) => return Err(anyhow!("HELLO failed: {}", e)),
+                    _ => continue,
+                }
+            }
+
+            if parser.messages.is_empty() {
+                continue;
+            }
         }
 
         Ok(Self { stream, parser })
@@ -120,58 +208,73 @@ impl LightingControllerClient {
         Ok(())
     }
 
-    async fn read_response(&mut self) -> Result<LiveMessage> {
+    /// Read next parsed message from TLC
+    pub async fn read_message(&mut self) -> Result<LiveMessage> {
         loop {
-            let mut buf = [0u8; 4096];
-            let n = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.stream.read(&mut buf),
-            )
-            .await??;
+            if let Some(msg) = self.parser.next_message() {
+                 // If server is asking for BPM, reply with default 120 if not set
+                if let LiveMessage::Bpm(_) = &msg {
+                    // ignore incoming value; just respond with current/default BPM
+                    self.send_bpm().await?;
+                }
+                return Ok(msg);
+            }
 
+            let mut buf = [0u8; 4096];
+            let n = timeout(Duration::from_secs(5), self.stream.read(&mut buf)).await??;
             if n == 0 {
                 return Err(anyhow!("Connection closed"));
             }
+            self.parser.feed(&buf[..n]);
+        }
+    }
 
-            if let Some(msg) = self.parser.feed(&buf[..n]) {
-                return Ok(msg);
+    pub async fn send_bpm(&mut self) -> Result<()> {
+        self.send(&format!("BPM|{}", 120.0)).await
+    }
+
+    /// Request and retrieve button list
+    pub async fn button_list(&mut self) -> Result<Vec<Button>> {
+        self.send("BUTTON_LIST").await?;
+        loop {
+            match self.read_message().await? {
+                LiveMessage::ButtonList(list) => return Ok(list),
+                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
+                _ => continue,
             }
         }
     }
 
-    pub async fn button_list(&mut self) -> Result<Vec<Button>> {
-        self.send("BUTTON_LIST").await?;
-        match self.read_response().await? {
-            LiveMessage::ButtonList(buttons) => Ok(buttons),
-            LiveMessage::Error(e) => Err(anyhow!("Error: {}", e)),
-            _ => Err(anyhow!("Unexpected response")),
+    pub async fn button_press(&mut self, name: &str) -> Result<()> {
+        self.send(&format!("BUTTON_PRESS|{}", name)).await?;
+        loop {
+            match self.read_message().await? {
+                LiveMessage::Ok => return Ok(()),
+                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
+                _ => continue,
+            }
         }
     }
 
-    pub async fn button_press(&mut self, id: u32) -> Result<()> {
-        self.send(&format!("BUTTON_PRESS|{}", id)).await?;
-        match self.read_response().await? {
-            LiveMessage::Ok => Ok(()),
-            LiveMessage::Error(e) => Err(anyhow!("Error: {}", e)),
-            _ => Err(anyhow!("Unexpected response")),
+    pub async fn button_release(&mut self, name: &str) -> Result<()> {
+        self.send(&format!("BUTTON_RELEASE|{}", name)).await?;
+        loop {
+            match self.read_message().await? {
+                LiveMessage::Ok => return Ok(()),
+                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
+                _ => continue,
+            }
         }
     }
 
-    pub async fn button_release(&mut self, id: u32) -> Result<()> {
-        self.send(&format!("BUTTON_RELEASE|{}", id)).await?;
-        match self.read_response().await? {
-            LiveMessage::Ok => Ok(()),
-            LiveMessage::Error(e) => Err(anyhow!("Error: {}", e)),
-            _ => Err(anyhow!("Unexpected response")),
-        }
-    }
-
-    pub async fn button_toggle(&mut self, id: u32) -> Result<()> {
-        self.send(&format!("BUTTON_TOGGLE|{}", id)).await?;
-        match self.read_response().await? {
-            LiveMessage::Ok => Ok(()),
-            LiveMessage::Error(e) => Err(anyhow!("Error: {}", e)),
-            _ => Err(anyhow!("Unexpected response")),
+    pub async fn button_toggle(&mut self, name: &str) -> Result<()> {
+        self.send(&format!("CUE|{}", name)).await?;
+        loop {
+            match self.read_message().await? {
+                LiveMessage::Ok => return Ok(()),
+                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
+                _ => continue,
+            }
         }
     }
 }
