@@ -211,7 +211,7 @@ impl LightingControllerClient {
                  // If server is asking for BPM, reply with default 120 if not set
                 if let LiveMessage::Bpm(_) = &msg {
                     // ignore incoming value; just respond with current/default BPM
-                    self.send_bpm().await?;
+                    self.send_bpm(120.0).await?;
                 }
                 return Ok(msg);
             }
@@ -225,8 +225,34 @@ impl LightingControllerClient {
         }
     }
 
-    pub async fn send_bpm(&mut self) -> Result<()> {
-        self.send(&format!("BPM|{}", 120.0)).await
+    /// Send BPM command - does not expect a response
+    pub async fn send_bpm(&mut self, bpm: f32) -> Result<()> {
+        self.send(&format!("BPM|{}", bpm)).await
+    }
+
+    /// Send BEAT command - does not expect a response
+    pub async fn send_beat(&mut self) -> Result<()> {
+        self.send("BEAT").await
+    }
+
+    /// Send FREEZE_ON command - does not expect a response
+    pub async fn send_freeze_on(&mut self) -> Result<()> {
+        self.send("FREEZE_ON").await
+    }
+
+    /// Send FREEZE_OFF command - does not expect a response
+    pub async fn send_freeze_off(&mut self) -> Result<()> {
+        self.send("FREEZE_OFF").await
+    }
+
+    /// Send AUTO_BPM_ON command - does not expect a response
+    pub async fn send_auto_bpm_on(&mut self) -> Result<()> {
+        self.send("AUTO_BPM_ON").await
+    }
+
+    /// Send AUTO_BPM_OFF command - does not expect a response
+    pub async fn send_auto_bpm_off(&mut self) -> Result<()> {
+        self.send("AUTO_BPM_OFF").await
     }
 
     /// Request and retrieve button list
