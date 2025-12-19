@@ -268,53 +268,14 @@ impl LightingControllerClient {
     }
 
     pub async fn button_press(&mut self, name: &str) -> Result<()> {
-        self.send(&format!("BUTTON_PRESS|{}", name)).await?;
-        loop {
-            match self.read_message().await? {
-                LiveMessage::Ok => return Ok(()),
-                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
-                _ => continue,
-            }
-        }
+        self.send(&format!("BUTTON_PRESS|{}", name)).await
     }
 
     pub async fn button_release(&mut self, name: &str) -> Result<()> {
-        self.send(&format!("BUTTON_RELEASE|{}", name)).await?;
-        loop {
-            match self.read_message().await? {
-                LiveMessage::Ok => return Ok(()),
-                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
-                _ => continue,
-            }
-        }
+        self.send(&format!("BUTTON_RELEASE|{}", name)).await
     }
 
     pub async fn button_toggle(&mut self, name: &str) -> Result<()> {
-        self.send(&format!("CUE|{}", name)).await?;
-        // For toggle operations, the server sends BUTTON_PRESS or BUTTON_RELEASE
-        // when the button state changes. Accept either as a success indicator.
-        // This avoids waiting for OK which may be delayed or come after other messages.
-        let mut max_iterations = 20; // Prevent infinite loops, allow for other button messages
-        loop {
-            if max_iterations == 0 {
-                return Err(anyhow!("Toggle operation timed out - too many messages without confirmation"));
-            }
-            max_iterations -= 1;
-            
-            match self.read_message().await? {
-                LiveMessage::Ok => return Ok(()),
-                LiveMessage::Error(e) => return Err(anyhow!("Error: {}", e)),
-                // Accept BUTTON_PRESS or BUTTON_RELEASE as success indicators for toggle
-                // The server sends these when the button state changes, which confirms the toggle worked
-                LiveMessage::ButtonPress(btn_name) | LiveMessage::ButtonRelease(btn_name) => {
-                    if btn_name == name {
-                        // This is our button - the toggle succeeded!
-                        return Ok(());
-                    }
-                    // Different button, continue waiting
-                }
-                _ => continue,
-            }
-        }
+        self.send(&format!("CUE|{}", name)).await
     }
 }
