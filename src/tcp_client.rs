@@ -154,7 +154,7 @@ fn parse_buttons(xml: &[u8]) -> Vec<Button> {
         .filter_map(|n| {
             Some(Button {
                 id: n.attribute("index")?.parse().ok()?,
-                name: n.text().unwrap_or("").trim().to_string(),
+                name: n.text().unwrap_or("").to_string(),
             })
         })
         .collect()
