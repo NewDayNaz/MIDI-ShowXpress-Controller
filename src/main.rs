@@ -12,6 +12,7 @@ use persistence::{AppConfig, PresetStorage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use midir::MidiInputConnection;
 
 #[derive(PartialEq)]
 enum ConnectionState {
@@ -48,7 +49,8 @@ struct AppState {
     selected_preset: Option<usize>,
     buttons: Vec<Button>,
     midi_log: MidiLog,
-    midi_messages: HashMap<String, Vec<String>>,
+    midi_messages: HashMap<String, Vec<MidiMessage>>,
+    flashing_messages: HashMap<String, f64>, // Maps display name to flash start time
     midi_learn: MidiLearnState,
     storage: PresetStorage,
     config: AppConfig,
@@ -59,6 +61,7 @@ struct AppState {
     available_midi_ports: Vec<String>,
     selected_midi_port: Option<usize>,
     midi_connection_active: bool,
+    midi_connection: Arc<Mutex<Option<MidiInputConnection<()>>>>,
     
     // Controller Connection
     connection_state: ConnectionState,
@@ -83,6 +86,7 @@ impl AppState {
         storage: PresetStorage,
         action_tx: mpsc::UnboundedSender<ActionCommand>,
         available_midi_ports: Vec<String>,
+        midi_connection: Arc<Mutex<Option<MidiInputConnection<()>>>>,
     ) -> Result<Self> {
         let presets = storage.load().unwrap_or_default();
         let config = storage.load_config().unwrap_or_default();
@@ -121,6 +125,7 @@ impl AppState {
             buttons: Vec::new(),
             midi_log: MidiLog::new(100),
             midi_messages: HashMap::new(),
+            flashing_messages: HashMap::new(),
             midi_learn: MidiLearnState::new(),
             storage,
             config,
@@ -129,6 +134,7 @@ impl AppState {
             available_midi_ports,
             selected_midi_port,
             midi_connection_active: false,
+            midi_connection,
             connection_state: ConnectionState::Disconnected,
             connection_address,
             connection_password,
@@ -160,6 +166,8 @@ impl AppState {
     }
 
     fn handle_midi_message(&mut self, msg: MidiMessage) {
+        // Clone early for storage, keep original for other uses
+        let msg_for_storage = msg.clone();
         let display = msg.display_name();
         self.midi_log.add(format!("→ {}", display));
 
@@ -168,11 +176,24 @@ impl AppState {
             MidiMessage::NoteOff(_) => "Note Off",
             MidiMessage::ControlChange { .. } => "Control Change",
         };
-
-        self.midi_messages
+        
+        let messages = self.midi_messages
             .entry(category.to_string())
-            .or_insert_with(Vec::new)
-            .push(display.clone());
+            .or_insert_with(Vec::new);
+        
+        // Only add if it doesn't already exist (check by display name)
+        let display_str = display.clone();
+        let already_exists = messages.iter().any(|m| m.display_name() == display_str);
+        if !already_exists {
+            messages.push(msg_for_storage);
+        } else {
+            // Flash the existing entry
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            self.flashing_messages.insert(display_str.clone(), current_time);
+        }
 
         self.midi_learn.capture(&msg);
 
@@ -182,7 +203,10 @@ impl AppState {
         }
     }
 
-    fn render_midi_panel(&mut self, ui: &Ui) {
+    fn render_midi_panel(&mut self, ui: &Ui) -> Option<usize> {
+        let mut port_change_request: Option<usize> = None;
+        let mut pending_trigger: Option<MidiTrigger> = None;
+        
         ui.child_window("##midi_panel")
             .size([300.0, 0.0])
             .border(true)
@@ -198,7 +222,7 @@ impl AppState {
                             for (timestamp, message) in &self.midi_log.entries {
                                 ui.text_colored([0.7, 0.7, 0.7, 1.0], timestamp);
                                 ui.same_line();
-                                ui.text(message);
+                                ui.text_wrapped(message);
                             }
                             if !self.midi_log.entries.is_empty() {
                                 ui.set_scroll_here_y_with_ratio(1.0);
@@ -208,22 +232,119 @@ impl AppState {
 
                 ui.separator();
 
+                // MIDI Port Selector
+                ui.text("MIDI Device:");
+                ui.set_next_item_width(-1.0);
+                let preview = if let Some(idx) = self.selected_midi_port {
+                    if idx < self.available_midi_ports.len() {
+                        &self.available_midi_ports[idx]
+                    } else {
+                        "None"
+                    }
+                } else {
+                    "None"
+                };
+
+                if let Some(_token) = ui.begin_combo("##midi_port_selector", preview) {
+                    for (idx, port_name) in self.available_midi_ports.iter().enumerate() {
+                        let selected = self.selected_midi_port == Some(idx);
+                        if ui.selectable_config(port_name).selected(selected).build() {
+                            if self.selected_midi_port != Some(idx) {
+                                port_change_request = Some(idx);
+                            }
+                        }
+                    }
+                }
+
+                ui.separator();
+
                 if ui.collapsing_header("MIDI Messages", TreeNodeFlags::DEFAULT_OPEN) {
                     ui.child_window("##midi_tree")
                         .size([0.0, 0.0])
                         .border(true)
                         .build(|| {
+                            // Get current time for flash calculations
+                            let current_time = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64();
+                            
+                            // Clean up old flash entries (older than 1 second)
+                            self.flashing_messages.retain(|_, flash_time| {
+                                current_time - *flash_time < 1.0
+                            });
+                            
                             for (category, messages) in &self.midi_messages {
                                 if ui.tree_node_config(category).default_open(true).build(|| {
                                     for msg in messages {
-                                        ui.text(msg);
+                                        let display = msg.display_name();
                                         
+                                        // Check if this message is flashing
+                                        let is_flashing = if let Some(flash_time) = self.flashing_messages.get(&display) {
+                                            let age = (current_time - flash_time) as f32;
+                                            if age < 1.0f32 {
+                                                Some(age)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        
+                                        // Apply flash color if flashing
+                                        if let Some(age) = is_flashing {
+                                            // Fade from bright yellow to normal over 1 second
+                                            let intensity: f32 = 1.0f32 - age; // 1.0 -> 0.0
+                                            let r: f32 = 1.0f32;
+                                            let g: f32 = 0.8f32 + 0.2f32 * intensity;
+                                            let b: f32 = 0.2f32 * intensity;
+                                            let a: f32 = 1.0f32;
+                                            let flash_color = [r, g, b, a];
+                                            let _style = ui.push_style_color(StyleColor::Text, flash_color.into());
+                                            if ui.selectable(&display) {
+                                                // Handle single click if needed
+                                            }
+                                        } else {
+                                            // Normal display
+                                            if ui.selectable(&display) {
+                                                // Handle single click if needed
+                                            }
+                                        }
+                                        
+                                        // Handle double-click to add as trigger
+                                        if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                                            // Collect the trigger to add (we'll process it after iteration)
+                                            if let Some(trigger) = MidiTrigger::from_message(msg) {
+                                                pending_trigger = Some(trigger);
+                                            }
+                                        }
+                                        
+                                        if ui.is_item_hovered() {
+                                            ui.tooltip_text("Double-click to add as trigger");
+                                        }
                                     }
                                 }).is_some() {}
                             }
                         });
                 }
             });
+        
+        // Process pending trigger addition after the UI rendering is complete
+        if let Some(trigger) = pending_trigger {
+            if let Some(preset_idx) = self.selected_preset {
+                // Check for duplicate trigger
+                let is_duplicate = self.presets[preset_idx].triggers
+                    .iter()
+                    .any(|existing_trigger| existing_trigger == &trigger);
+                
+                if !is_duplicate {
+                    self.presets[preset_idx].triggers.push(trigger.clone());
+                    let _ = self.save_presets();
+                }
+            }
+        }
+        
+        port_change_request
     }
 
     fn render_preset_panel(&mut self, ui: &Ui) {
@@ -310,17 +431,24 @@ impl AppState {
                     ui.separator();
 
                     ui.text("Triggers:");
+                    let preset_idx = idx; // Copy the index to avoid borrowing issues
                     ui.child_window("##triggers")
                         .size([0.0, 150.0])
                         .border(true)
                         .build(|| {
-                            for (i, trigger) in preset.triggers.iter().enumerate() {
-                                ui.bullet_text(&trigger.display_name());
+                            // Use indices to avoid borrowing conflicts
+                            let triggers_len = self.presets[preset_idx].triggers.len();
+                            for i in 0..triggers_len {
+                                let trigger_display = self.presets[preset_idx].triggers[i].display_name();
+                                ui.bullet_text(&trigger_display);
                                 ui.same_line();
                                 if ui.small_button(&format!("X##trig_{}", i)) {
+                                    self.presets[preset_idx].triggers.remove(i);
+                                    let _ = self.save_presets();
+                                    break; // Break to avoid index issues after removal
                                 }
                             }
-                            if preset.triggers.is_empty() {
+                            if self.presets[preset_idx].triggers.is_empty() {
                                 ui.text_disabled("No triggers configured");
                             }
                         });
@@ -657,11 +785,78 @@ impl AppState {
                         ui.text_disabled("Not connected");
                     }
                     ConnectionState::Error(err) => {
-                        ui.text_colored([1.0, 0.2, 0.2, 1.0], &format!("Connection error: {}", err));
+                        let _style = ui.push_style_color(StyleColor::Text, [1.0, 0.2, 0.2, 1.0]);
+                        ui.text_wrapped(&format!("Connection error: {}", err));
                     }
                 }
             });
     }
+}
+
+fn connect_midi_port(
+    port_idx: usize,
+    available_ports: &[String],
+    state: Arc<Mutex<AppState>>,
+) -> Result<()> {
+    // Get a reference to midi_connection Arc to avoid nested locks
+    let midi_conn_arc = {
+        let state_guard = state.lock().unwrap();
+        Arc::clone(&state_guard.midi_connection)
+    };
+    
+    // Disconnect existing connection
+    {
+        let mut conn_guard = midi_conn_arc.lock().unwrap();
+        *conn_guard = None;
+    }
+
+    // Create new MIDI input
+    let midi_in = midir::MidiInput::new("lighting-midi")?;
+    let ports = midi_in.ports();
+    
+    if port_idx >= ports.len() {
+        return Err(anyhow::anyhow!("Invalid port index"));
+    }
+
+    let port_name = midi_in.port_name(&ports[port_idx])
+        .unwrap_or_else(|_| format!("Port {}", port_idx));
+    
+    let state_midi = Arc::clone(&state);
+    let conn = midi_in.connect(
+        &ports[port_idx],
+        "midi-listener",
+        move |_timestamp, message, _| {
+            if let Some(midi_msg) = MidiMessage::from_raw(message) {
+                if let Ok(mut state) = state_midi.lock() {
+                    state.handle_midi_message(midi_msg);
+                }
+            }
+        },
+        (),
+    )?;
+
+    // Store the connection handle
+    {
+        let mut conn_guard = midi_conn_arc.lock().unwrap();
+        *conn_guard = Some(conn);
+    }
+    
+    // Update state
+    {
+        let mut state_guard = state.lock().unwrap();
+        state_guard.selected_midi_port = Some(port_idx);
+        state_guard.midi_connection_active = true;
+        state_guard.midi_log.add(format!("MIDI connected to: {}", port_name));
+        
+        // Save to config
+        if port_idx < available_ports.len() {
+            state_guard.config.last_midi_port = Some(available_ports[port_idx].clone());
+            state_guard.save_config();
+        }
+    }
+
+    println!("MIDI connected to: {}", port_name);
+    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -691,24 +886,48 @@ fn run() -> Result<()> {
     });
 
     let storage = PresetStorage::new()?;
-    let state = Arc::new(Mutex::new(AppState::new(storage, action_tx.clone(), available_midi_ports.clone())?));
+    let midi_connection = Arc::new(Mutex::new(None));
+    let state = Arc::new(Mutex::new(AppState::new(
+        storage,
+        action_tx.clone(),
+        available_midi_ports.clone(),
+        Arc::clone(&midi_connection),
+    )?));
 
-    if !ports.is_empty() {
-        let port_name = midi_in.port_name(&ports[0]).unwrap_or_default();
-        let state_midi = Arc::clone(&state);
-        let _midi_conn = midi_in.connect(
-            &ports[0],
-            "midi-listener",
-            move |_timestamp, message, _| {
-                if let Some(midi_msg) = MidiMessage::from_raw(message) {
-                    if let Ok(mut state) = state_midi.lock() {
-                        state.handle_midi_message(midi_msg);
-                    }
-                }
-            },
-            (),
-        )?;
-        println!("MIDI connected to: {}", port_name);
+    // Connect to initial port if available
+    let initial_port_idx = {
+        let state_guard = state.lock().unwrap();
+        state_guard.selected_midi_port
+    };
+
+    if let Some(port_idx) = initial_port_idx {
+        if port_idx < ports.len() {
+            if let Err(e) = connect_midi_port(port_idx, &available_midi_ports, Arc::clone(&state)) {
+                eprintln!("Failed to connect to MIDI port {}: {}", port_idx, e);
+            }
+        }
+    }
+
+    // Attempt to connect to controller on startup
+    {
+        let (connection_address, connection_password) = {
+            let state_guard = state.lock().unwrap();
+            (state_guard.connection_address.clone(), state_guard.connection_password.clone())
+        };
+        
+        if !connection_address.is_empty() {
+            // Set connection state to Connecting
+            {
+                let mut state_guard = state.lock().unwrap();
+                state_guard.connection_state = ConnectionState::Connecting;
+                state_guard.midi_log.add(format!("Connecting to {}", connection_address));
+            }
+            
+            // Send connect command
+            let addr = connection_address.clone();
+            let pass = connection_password.clone();
+            let _ = action_tx.send(ActionCommand::Connect(addr, pass));
+        }
     }
 
     let event_loop = winit::event_loop::EventLoop::new();
@@ -837,6 +1056,8 @@ fn run() -> Result<()> {
                 
                 let ui = imgui.frame();
 
+                let mut port_change_request: Option<usize> = None;
+                
                 ui.window("Lighting MIDI Controller")
                     .size([1200.0, 800.0], Condition::FirstUseEver)
                     .position([0.0, 0.0], Condition::FirstUseEver)
@@ -873,13 +1094,29 @@ fn run() -> Result<()> {
                                 }
                             }
 
-                            state.render_midi_panel(&ui);
+                            if let Some(new_port_idx) = state.render_midi_panel(&ui) {
+                                port_change_request = Some(new_port_idx);
+                            }
                             ui.same_line();
                             state.render_preset_panel(&ui);
                             ui.same_line();
                             state.render_button_panel(&ui, &ui_tx);
                         }
                     });
+
+                // Handle MIDI port change request outside the state lock
+                if let Some(new_port_idx) = port_change_request {
+                    let available_ports = {
+                        let state_guard = state.lock().unwrap();
+                        state_guard.available_midi_ports.clone()
+                    };
+                    if let Err(e) = connect_midi_port(new_port_idx, &available_ports, Arc::clone(&state)) {
+                        eprintln!("Failed to reconnect MIDI port {}: {}", new_port_idx, e);
+                        if let Ok(mut state_guard) = state.lock() {
+                            state_guard.midi_log.add(format!("Failed to connect to MIDI port: {}", e));
+                        }
+                    }
+                }
 
                 let mut encoder = device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
