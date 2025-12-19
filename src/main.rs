@@ -1061,7 +1061,7 @@ fn run() -> Result<()> {
 
     let event_loop = winit::event_loop::EventLoop::new();
     let window = winit::window::WindowBuilder::new()
-        .with_title("Lighting MIDI Controller")
+        .with_title("MIDI ShowXpress Controller")
         .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
 
@@ -1223,7 +1223,7 @@ fn run() -> Result<()> {
 
                 let mut port_change_request: Option<usize> = None;
                 
-                ui.window("Lighting MIDI Controller")
+                ui.window("MIDI ShowXpress Controller")
                     .size([window_width, window_height], Condition::Always)
                     .position([0.0, 0.0], Condition::Always)
                     .movable(false)
