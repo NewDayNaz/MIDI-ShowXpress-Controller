@@ -8,13 +8,20 @@ use anyhow::Result;
 use chrono::Local;
 use imgui::*;
 use models::*;
-use persistence::PresetStorage;
+use persistence::{AppConfig, PresetStorage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error(String),
+}
+
 struct MidiLog {
-    entries: Vec<(String, String)>, // (timestamp, message)
+    entries: Vec<(String, String)>,
     max_entries: usize,
 }
 
@@ -40,11 +47,21 @@ struct AppState {
     selected_preset: Option<usize>,
     buttons: Vec<Button>,
     midi_log: MidiLog,
-    midi_messages: HashMap<String, Vec<String>>, // Organized by type
+    midi_messages: HashMap<String, Vec<String>>,
     midi_learn: MidiLearnState,
     storage: PresetStorage,
+    config: AppConfig,
     action_tx: mpsc::UnboundedSender<ActionCommand>,
     preset_matcher: Arc<Mutex<PresetMatcher>>,
+    
+    // MIDI Port Selection
+    available_midi_ports: Vec<String>,
+    selected_midi_port: Option<usize>,
+    midi_connection_active: bool,
+    
+    // Controller Connection
+    connection_state: ConnectionState,
+    connection_address: String,
     
     // UI State
     new_preset_name: String,
@@ -53,8 +70,6 @@ struct AppState {
     pending_button_action: Option<(u32, String)>,
     action_type_selected: i32,
     action_delay: f32,
-    connection_address: String,
-    connected: bool,
     search_filter: String,
 }
 
@@ -62,12 +77,25 @@ impl AppState {
     fn new(
         storage: PresetStorage,
         action_tx: mpsc::UnboundedSender<ActionCommand>,
+        available_midi_ports: Vec<String>,
     ) -> Result<Self> {
         let presets = storage.load().unwrap_or_default();
+        let config = storage.load_config().unwrap_or_default();
+        
         let preset_matcher = Arc::new(Mutex::new(PresetMatcher::new(
             presets.clone(),
             action_tx.clone(),
         )));
+
+        // Find the last used MIDI port
+        let selected_midi_port = if let Some(ref last_port) = config.last_midi_port {
+            available_midi_ports.iter().position(|p| p == last_port)
+        } else {
+            if !available_midi_ports.is_empty() { Some(0) } else { None }
+        };
+
+        let connection_address = config.last_controller_address
+            .unwrap_or_else(|| "localhost:7348".to_string());
 
         Ok(Self {
             presets,
@@ -77,16 +105,20 @@ impl AppState {
             midi_messages: HashMap::new(),
             midi_learn: MidiLearnState::new(),
             storage,
+            config,
             action_tx,
             preset_matcher,
+            available_midi_ports,
+            selected_midi_port,
+            midi_connection_active: false,
+            connection_state: ConnectionState::Disconnected,
+            connection_address,
             new_preset_name: String::new(),
             new_preset_desc: String::new(),
             show_new_preset_modal: false,
             pending_button_action: None,
             action_type_selected: 0,
             action_delay: 0.0,
-            connection_address: "localhost:7348".to_string(),
-            connected: false,
             search_filter: String::new(),
         })
     }
@@ -99,11 +131,16 @@ impl AppState {
         Ok(())
     }
 
+    fn save_config(&mut self) {
+        if let Err(e) = self.storage.save_config(&self.config) {
+            eprintln!("Failed to save config: {}", e);
+        }
+    }
+
     fn handle_midi_message(&mut self, msg: MidiMessage) {
         let display = msg.display_name();
         self.midi_log.add(format!("→ {}", display));
 
-        // Organize messages by type
         let category = match &msg {
             MidiMessage::NoteOn(_) => "Note On",
             MidiMessage::NoteOff(_) => "Note Off",
@@ -115,10 +152,8 @@ impl AppState {
             .or_insert_with(Vec::new)
             .push(display.clone());
 
-        // Handle MIDI learn
         self.midi_learn.capture(&msg);
 
-        // Trigger preset matching
         if let Ok(matcher) = self.preset_matcher.lock() {
             matcher.handle_midi(&msg);
             self.midi_log.add(format!("✓ Matched presets"));
@@ -133,7 +168,6 @@ impl AppState {
                 ui.text_colored([0.8, 0.8, 1.0, 1.0], "MIDI Monitor");
                 ui.separator();
 
-                // Log section
                 if ui.collapsing_header("Console Log", TreeNodeFlags::DEFAULT_OPEN) {
                     ui.child_window("##midi_log")
                         .size([0.0, 200.0])
@@ -144,7 +178,7 @@ impl AppState {
                                 ui.same_line();
                                 ui.text(message);
                             }
-                            if self.midi_log.entries.len() > 0 {
+                            if !self.midi_log.entries.is_empty() {
                                 ui.set_scroll_here_y_with_ratio(1.0);
                             }
                         });
@@ -152,23 +186,21 @@ impl AppState {
 
                 ui.separator();
 
-                // MIDI message tree
                 if ui.collapsing_header("MIDI Messages", TreeNodeFlags::DEFAULT_OPEN) {
                     ui.child_window("##midi_tree")
                         .size([0.0, 0.0])
                         .border(true)
                         .build(|| {
                             for (category, messages) in &self.midi_messages {
-                                if ui.tree_node_config(category).default_open(true).build() {
+                                if ui.tree_node_config(category).default_open(true).build(|| {
                                     for msg in messages {
                                         ui.text(msg);
                                         
-                                        // Drag source (simplified for skeleton)
                                         if ui.is_item_hovered() {
-                                            ui.set_tooltip("Drag to preset area");
+                                            ui.tooltip_text("Drag to preset area");
                                         }
                                     }
-                                }
+                                }).is_some() {}
                             }
                         });
                 }
@@ -183,7 +215,6 @@ impl AppState {
                 ui.text_colored([1.0, 0.8, 0.8, 1.0], "Preset Builder");
                 ui.separator();
 
-                // Preset selector
                 ui.text("Active Preset:");
                 ui.same_line();
                 
@@ -194,14 +225,13 @@ impl AppState {
                 };
 
                 ui.set_next_item_width(200.0);
-                if ui.begin_combo("##preset_selector", preview) {
+                if let Some(_token) = ui.begin_combo("##preset_selector", preview) {
                     for (idx, preset) in self.presets.iter().enumerate() {
                         let selected = self.selected_preset == Some(idx);
                         if ui.selectable_config(&preset.name).selected(selected).build() {
                             self.selected_preset = Some(idx);
                         }
                     }
-                    ui.end_combo();
                 }
 
                 ui.same_line();
@@ -211,7 +241,6 @@ impl AppState {
 
                 ui.separator();
 
-                // Show selected preset details
                 if let Some(idx) = self.selected_preset {
                     let preset = &self.presets[idx];
                     
@@ -228,7 +257,6 @@ impl AppState {
                                 ui.bullet_text(&trigger.display_name());
                                 ui.same_line();
                                 if ui.small_button(&format!("X##trig_{}", i)) {
-                                    // Remove trigger - needs mutable borrow handling
                                 }
                             }
                             if preset.triggers.is_empty() {
@@ -250,7 +278,6 @@ impl AppState {
                                 ));
                                 ui.same_line();
                                 if ui.small_button(&format!("X##act_{}", i)) {
-                                    // Remove action
                                 }
                             }
                             if preset.actions.is_empty() {
@@ -259,40 +286,37 @@ impl AppState {
                         });
                 }
 
-                // New preset modal
                 if self.show_new_preset_modal {
                     ui.open_popup("New Preset");
                 }
 
-                ui.popup_modal("New Preset")
-                    .always_auto_resize(true)
-                    .build(ui, || {
-                        ui.text("Name:");
-                        ui.input_text("##name", &mut self.new_preset_name).build();
+                ui.popup("New Preset", || {
+                    ui.text("Name:");
+                    ui.input_text("##name", &mut self.new_preset_name).build();
+                    
+                    ui.text("Description:");
+                    ui.input_text("##desc", &mut self.new_preset_desc).build();
+
+                    if ui.button("Create") {
+                        let preset = Preset::new(
+                            self.new_preset_name.clone(),
+                            self.new_preset_desc.clone(),
+                        );
+                        self.presets.push(preset);
+                        let _ = self.save_presets();
                         
-                        ui.text("Description:");
-                        ui.input_text("##desc", &mut self.new_preset_desc).build();
+                        self.new_preset_name.clear();
+                        self.new_preset_desc.clear();
+                        self.show_new_preset_modal = false;
+                        ui.close_current_popup();
+                    }
 
-                        if ui.button("Create") {
-                            let preset = Preset::new(
-                                self.new_preset_name.clone(),
-                                self.new_preset_desc.clone(),
-                            );
-                            self.presets.push(preset);
-                            let _ = self.save_presets();
-                            
-                            self.new_preset_name.clear();
-                            self.new_preset_desc.clear();
-                            self.show_new_preset_modal = false;
-                            ui.close_current_popup();
-                        }
-
-                        ui.same_line();
-                        if ui.button("Cancel") {
-                            self.show_new_preset_modal = false;
-                            ui.close_current_popup();
-                        }
-                    });
+                    ui.same_line();
+                    if ui.button("Cancel") {
+                        self.show_new_preset_modal = false;
+                        ui.close_current_popup();
+                    }
+                });
             });
     }
 
@@ -304,19 +328,16 @@ impl AppState {
                 ui.text_colored([0.8, 1.0, 1.0, 1.0], "Lighting Buttons");
                 ui.separator();
 
-                // Connection controls
                 ui.text("Controller Address:");
                 ui.input_text("##address", &mut self.connection_address).build();
                 
                 if ui.button("Connect") {
                     self.connected = true;
                     self.midi_log.add("Connected to controller".to_string());
-                    // In production: spawn async task to connect and fetch buttons
                 }
 
                 ui.separator();
 
-                // Button list
                 if self.connected {
                     ui.child_window("##buttons")
                         .size([0.0, 0.0])
@@ -324,11 +345,10 @@ impl AppState {
                         .build(|| {
                             for button in &self.buttons {
                                 if ui.selectable(&format!("{} ({})", button.name, button.id)) {
-                                    // Trigger drag
                                 }
                                 
                                 if ui.is_item_hovered() {
-                                    ui.set_tooltip("Drag to preset area");
+                                    ui.tooltip_text("Drag to preset area");
                                 }
                             }
                             
@@ -343,36 +363,33 @@ impl AppState {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize MIDI
+fn run() -> Result<()> {
     let midi_in = midir::MidiInput::new("lighting-midi")?;
     let ports = midi_in.ports();
     
+    let available_midi_ports: Vec<String> = ports
+        .iter()
+        .map(|p| midi_in.port_name(p).unwrap_or_else(|_| "Unknown".to_string()))
+        .collect();
+    
     println!("Available MIDI ports:");
-    for (i, port) in ports.iter().enumerate() {
-        println!("  {}: {}", i, midi_in.port_name(port).unwrap_or_default());
+    for (i, port_name) in available_midi_ports.iter().enumerate() {
+        println!("  {}: {}", i, port_name);
     }
 
-    // Create action executor channel
     let (action_tx, action_rx) = mpsc::unbounded_channel();
+    let action_rx_ui = action_tx.clone();
 
-    // Spawn action executor
     tokio::spawn(async move {
         let mut executor = ActionExecutor::new(action_rx);
-        // In production: connect here
-        // executor.connect("localhost:7348").await.ok();
         executor.run().await;
     });
 
-    // Initialize persistence
     let storage = PresetStorage::new()?;
+    let state = Arc::new(Mutex::new(AppState::new(storage, action_tx.clone(), available_midi_ports.clone())?));
 
-    // Initialize app state
-    let state = Arc::new(Mutex::new(AppState::new(storage, action_tx.clone())?));
-
-    // Set up MIDI callback
     if !ports.is_empty() {
+        let port_name = midi_in.port_name(&ports[0]).unwrap_or_default();
         let state_midi = Arc::clone(&state);
         let _midi_conn = midi_in.connect(
             &ports[0],
@@ -386,10 +403,9 @@ async fn main() -> Result<()> {
             },
             (),
         )?;
-        println!("MIDI connected to: {}", midi_in.port_name(&ports[0])?);
+        println!("MIDI connected to: {}", port_name);
     }
 
-    // Initialize ImGui
     let event_loop = winit::event_loop::EventLoop::new();
     let window = winit::window::WindowBuilder::new()
         .with_title("Lighting MIDI Controller")
@@ -406,7 +422,6 @@ async fn main() -> Result<()> {
 
     imgui.set_ini_filename(None);
 
-    // Set up fonts
     let hidpi_factor = window.scale_factor();
     let font_size = (13.0 * hidpi_factor) as f32;
     imgui.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
@@ -422,33 +437,43 @@ async fn main() -> Result<()> {
             }),
         }]);
 
-    // Set up wgpu
-    let instance = wgpu::Instance::default();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        dx12_shader_compiler: Default::default(),
+    });
     let surface = unsafe { instance.create_surface(&window) }.unwrap();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        })
-        .await
-        .unwrap();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    }))
+    .unwrap();
 
-    let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                features: wgpu::Features::empty(),
-                limits: wgpu::Limits::default(),
-            },
-            None,
-        )
-        .await
-        .unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: None,
+            features: wgpu::Features::empty(),
+            limits: wgpu::Limits::default(),
+        },
+        None,
+    ))
+    .unwrap();
 
-    let mut surface_config = surface
-        .get_default_config(&adapter, window.inner_size().width, window.inner_size().height)
-        .unwrap();
+    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_format = surface_caps.formats.iter()
+        .copied()
+        .find(|f| f.is_srgb())
+        .unwrap_or(surface_caps.formats[0]);
+
+    let mut surface_config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surface_format,
+        width: window.inner_size().width,
+        height: window.inner_size().height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: surface_caps.alpha_modes[0],
+        view_formats: vec![],
+    };
     surface.configure(&device, &surface_config);
 
     let mut renderer = imgui_wgpu::Renderer::new(
@@ -463,7 +488,6 @@ async fn main() -> Result<()> {
 
     let mut last_frame = std::time::Instant::now();
 
-    // Main event loop
     event_loop.run(move |event, _, control_flow| {
         *control_flow = winit::event_loop::ControlFlow::Poll;
 
@@ -508,13 +532,27 @@ async fn main() -> Result<()> {
                 
                 let ui = imgui.frame();
 
-                // Main window
                 ui.window("Lighting MIDI Controller")
                     .size([1200.0, 800.0], Condition::FirstUseEver)
                     .position([0.0, 0.0], Condition::FirstUseEver)
                     .build(|| {
                         if let Ok(mut state) = state.lock() {
-                            // Three-column layout
+                            // Process any connection results
+                            while let Ok(cmd) = action_rx_ui.try_recv() {
+                                match cmd {
+                                    ActionCommand::ConnectionSuccess(buttons) => {
+                                        state.buttons = buttons;
+                                        state.connection_state = ConnectionState::Connected;
+                                        state.midi_log.add(format!("Connected! Loaded {} buttons", state.buttons.len()));
+                                    }
+                                    ActionCommand::ConnectionError(err) => {
+                                        state.connection_state = ConnectionState::Error(err.clone());
+                                        state.midi_log.add(format!("Connection error: {}", err));
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             state.render_midi_panel(&ui);
                             ui.same_line();
                             state.render_preset_panel(&ui);
@@ -555,4 +593,12 @@ async fn main() -> Result<()> {
             }
         }
     });
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run() {
+        eprintln!("Application error: {}", e);
+        std::process::exit(1);
+    }
 }

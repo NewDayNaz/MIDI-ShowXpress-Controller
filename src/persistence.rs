@@ -7,6 +7,7 @@ use crate::models::Preset;
 
 pub struct PresetStorage {
     file_path: PathBuf,
+    config_path: PathBuf,
 }
 
 impl PresetStorage {
@@ -18,8 +19,9 @@ impl PresetStorage {
         fs::create_dir_all(config_dir)?;
 
         let file_path = config_dir.join("presets.json");
+        let config_path = config_dir.join("config.json");
 
-        Ok(Self { file_path })
+        Ok(Self { file_path, config_path })
     }
 
     pub fn load(&self) -> Result<Vec<Preset>> {
@@ -36,6 +38,37 @@ impl PresetStorage {
         let data = serde_json::to_string_pretty(presets)?;
         fs::write(&self.file_path, data)?;
         Ok(())
+    }
+
+    pub fn load_config(&self) -> Result<AppConfig> {
+        if !self.config_path.exists() {
+            return Ok(AppConfig::default());
+        }
+
+        let data = fs::read_to_string(&self.config_path)?;
+        let config: AppConfig = serde_json::from_str(&data)?;
+        Ok(config)
+    }
+
+    pub fn save_config(&self, config: &AppConfig) -> Result<()> {
+        let data = serde_json::to_string_pretty(config)?;
+        fs::write(&self.config_path, data)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppConfig {
+    pub last_midi_port: Option<String>,
+    pub last_controller_address: Option<String>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            last_midi_port: None,
+            last_controller_address: Some("localhost:7348".to_string()),
+        }
     }
 }
 

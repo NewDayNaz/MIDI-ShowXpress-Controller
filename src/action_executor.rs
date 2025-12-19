@@ -2,12 +2,14 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::models::{ButtonAction, ButtonActionType, MidiMessage, Preset};
+use crate::models::{Button, ButtonAction, ButtonActionType, MidiMessage, Preset};
 use crate::tcp_client::LightingControllerClient;
 
 pub enum ActionCommand {
     ExecutePreset(Preset),
     ExecuteSingle(ButtonAction),
+    ConnectionSuccess(Vec<Button>),
+    ConnectionError(String),
 }
 
 pub struct ActionExecutor {
