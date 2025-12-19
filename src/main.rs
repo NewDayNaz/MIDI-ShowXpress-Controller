@@ -9,7 +9,8 @@ use chrono::Local;
 use imgui::*;
 use models::*;
 use persistence::{AppConfig, PresetStorage};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use midir::MidiInputConnection;
@@ -79,6 +80,10 @@ struct AppState {
     action_delay: f32,
     search_filter: String,
     buttons_just_updated: bool,
+    
+    // Button Selection State
+    selected_button_indices: HashSet<usize>,
+    last_clicked_button_index: Option<usize>,
 }
 
 impl AppState {
@@ -148,6 +153,8 @@ impl AppState {
             action_delay: 0.0,
             search_filter: String::new(),
             buttons_just_updated: false,
+            selected_button_indices: HashSet::new(),
+            last_clicked_button_index: None,
         })
     }
 
@@ -162,6 +169,39 @@ impl AppState {
     fn save_config(&mut self) {
         if let Err(e) = self.storage.save_config(&self.config) {
             eprintln!("Failed to save config: {}", e);
+        }
+    }
+
+    fn handle_button_click(&mut self, button_idx: usize, ui: &Ui) {
+        let is_shift = ui.io().key_shift;
+        let is_ctrl = ui.io().key_ctrl;
+        
+        if is_shift {
+            // Shift+Click: Select range from last clicked to current
+            if let Some(last_idx) = self.last_clicked_button_index {
+                let start = last_idx.min(button_idx);
+                let end = last_idx.max(button_idx);
+                for idx in start..=end {
+                    self.selected_button_indices.insert(idx);
+                }
+            } else {
+                // No previous click, just select this one
+                self.selected_button_indices.insert(button_idx);
+            }
+            self.last_clicked_button_index = Some(button_idx);
+        } else if is_ctrl {
+            // Ctrl+Click: Toggle selection
+            if self.selected_button_indices.contains(&button_idx) {
+                self.selected_button_indices.remove(&button_idx);
+            } else {
+                self.selected_button_indices.insert(button_idx);
+            }
+            self.last_clicked_button_index = Some(button_idx);
+        } else {
+            // Regular click: Select only this button
+            self.selected_button_indices.clear();
+            self.selected_button_indices.insert(button_idx);
+            self.last_clicked_button_index = Some(button_idx);
         }
     }
 
@@ -711,6 +751,8 @@ impl AppState {
                         if ui.button("Disconnect") {
                             self.connection_state = ConnectionState::Disconnected;
                             self.buttons.clear();
+                            self.selected_button_indices.clear();
+                            self.last_clicked_button_index = None;
                             self.midi_log.add("Disconnected from controller".to_string());
                             let _ = self.action_tx.send(ActionCommand::Disconnect);
                         }
@@ -732,27 +774,19 @@ impl AppState {
 
                 match &self.connection_state {
                     ConnectionState::Connected => {
-                        ui.child_window("##buttons")
-                            .size([0.0, 0.0])
-                            .border(true)
-                            .build(|| {
-                                let buttons_len = self.buttons.len();
-                                for button_idx in 0..buttons_len {
-                                    let button = &self.buttons[button_idx];
-                                    let button_label = &button.name;
+                        // Add selected buttons button
+                        let has_selection = !self.selected_button_indices.is_empty();
+                        let preset_selected = self.selected_preset.is_some();
+                        ui.disabled(!has_selection || !preset_selected, || {
+                            if ui.button(&format!("Add Selected ({})", self.selected_button_indices.len())) {
+                                if let Some(preset_idx) = self.selected_preset {
+                                    let selected_indices: Vec<usize> = self.selected_button_indices.iter().copied().collect();
+                                    let action_type = self.last_action_type;
                                     
-                                    // Make button selectable
-                                    if ui.selectable(&button_label) {
-                                        // Handle single click if needed
-                                    }
-                                    
-                                    // Handle double-click - collect values first to avoid borrow conflicts
-                                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
-                                        let preset_idx_opt = self.selected_preset;
-                                        let button_name = button.name.clone();
-                                        let action_type = self.last_action_type;
-                                        // Now we can mutably borrow self (button reference is dropped)
-                                        if let Some(preset_idx) = preset_idx_opt {
+                                    for button_idx in selected_indices {
+                                        if button_idx < self.buttons.len() {
+                                            let button_name = self.buttons[button_idx].name.clone();
+                                            
                                             // Check for duplicate action (same button name and action type)
                                             let is_duplicate = self.presets[preset_idx].actions.iter()
                                                 .any(|existing_action| {
@@ -767,13 +801,66 @@ impl AppState {
                                                     delay_secs: 0.0,
                                                 };
                                                 self.presets[preset_idx].actions.push(action);
-                                                let _ = self.save_presets();
                                             }
                                         }
                                     }
                                     
+                                    let _ = self.save_presets();
+                                    self.selected_button_indices.clear();
+                                    self.last_clicked_button_index = None;
+                                }
+                            }
+                        });
+                        
+                        if !has_selection && preset_selected {
+                            ui.same_line();
+                            ui.text_disabled("Select buttons to add");
+                        }
+                        
+                        ui.separator();
+                        
+                        // Collect selection state before the closure
+                        let selected_indices_clone: HashSet<usize> = self.selected_button_indices.iter().copied().collect();
+                        
+                        let clicked_indices = RefCell::new(Vec::new());
+                        let double_clicked_data = RefCell::new(Vec::new());
+                        
+                        ui.child_window("##buttons")
+                            .size([0.0, 0.0])
+                            .border(true)
+                            .build(|| {
+                                let buttons_len = self.buttons.len();
+                                
+                                for button_idx in 0..buttons_len {
+                                    // Collect button name first to avoid borrow conflicts
+                                    let button_name = self.buttons[button_idx].name.clone();
+                                    let button_label = &button_name;
+                                    let is_selected = selected_indices_clone.contains(&button_idx);
+                                    
+                                    // Apply selection styling
+                                    let was_clicked = if is_selected {
+                                        let _style = ui.push_style_color(StyleColor::Header, [0.2, 0.5, 0.8, 0.5]);
+                                        let _style2 = ui.push_style_color(StyleColor::HeaderHovered, [0.3, 0.6, 0.9, 0.7]);
+                                        let _style3 = ui.push_style_color(StyleColor::HeaderActive, [0.2, 0.5, 0.8, 0.9]);
+                                        
+                                        ui.selectable_config(button_label).selected(true).build()
+                                    } else {
+                                        ui.selectable(button_label)
+                                    };
+                                    
+                                    if was_clicked {
+                                        clicked_indices.borrow_mut().push(button_idx);
+                                    }
+                                    
+                                    // Handle double-click - collect values first to avoid borrow conflicts
+                                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                                        let preset_idx_opt = self.selected_preset;
+                                        let action_type = self.last_action_type;
+                                        double_clicked_data.borrow_mut().push((preset_idx_opt, button_name.clone(), action_type));
+                                    }
+                                    
                                     if ui.is_item_hovered() {
-                                        ui.tooltip_text("Double-click to add to preset actions");
+                                        ui.tooltip_text("Click to select, Shift+Click for range, Ctrl+Click to toggle, Double-click to add");
                                     }
                                 }
 
@@ -785,6 +872,33 @@ impl AppState {
                                     self.buttons_just_updated = false;
                                 }
                             });
+                        
+                        // Handle clicks after UI rendering is complete (outside the closure)
+                        for button_idx in clicked_indices.into_inner() {
+                            self.handle_button_click(button_idx, ui);
+                        }
+                        
+                        // Handle double-clicks after UI rendering is complete (outside the closure)
+                        for (preset_idx_opt, button_name, action_type) in double_clicked_data.into_inner() {
+                            if let Some(preset_idx) = preset_idx_opt {
+                                // Check for duplicate action (same button name and action type)
+                                let is_duplicate = self.presets[preset_idx].actions.iter()
+                                    .any(|existing_action| {
+                                        existing_action.button_name == button_name
+                                            && existing_action.action == action_type
+                                    });
+                                
+                                if !is_duplicate {
+                                    let action = ButtonAction {
+                                        button_name,
+                                        action: action_type,
+                                        delay_secs: 0.0,
+                                    };
+                                    self.presets[preset_idx].actions.push(action);
+                                    let _ = self.save_presets();
+                                }
+                            }
+                        }
                     }
                     ConnectionState::Connecting => {
                         ui.text_disabled("Connecting...");
