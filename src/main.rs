@@ -327,6 +327,15 @@ impl AppState {
 
                     ui.separator();
                     ui.text("Actions:");
+                    ui.same_line();
+                    let preset_idx = idx; // Copy the index to avoid borrowing issues
+                    let has_actions = !self.presets[preset_idx].actions.is_empty();
+                    ui.disabled(!has_actions, || {
+                        if ui.small_button("Clear Actions") {
+                            self.presets[preset_idx].actions.clear();
+                            let _ = self.save_presets();
+                        }
+                    });
                     
                     // Action type selector
                     ui.text("Default Action Type:");
