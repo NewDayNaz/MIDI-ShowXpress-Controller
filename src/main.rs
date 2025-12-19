@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 mod action_executor;
 mod models;
 mod persistence;
