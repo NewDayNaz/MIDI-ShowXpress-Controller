@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::models::Preset;
+use crate::versioned_data::{load_presets, load_config, save_presets, save_config};
 
 pub struct PresetStorage {
     file_path: PathBuf,
@@ -30,12 +31,42 @@ impl PresetStorage {
         }
 
         let data = fs::read_to_string(&self.file_path)?;
-        let presets: Vec<Preset> = serde_json::from_str(&data)?;
-        Ok(presets)
+        
+        // Try loading with migration first
+        match load_presets(&data) {
+            Ok((presets, migrated_from)) => {
+                // If data was migrated, save it back in the new format
+                if let Some(from_version) = migrated_from {
+                    eprintln!("Migrated presets from version {} to {}", from_version, crate::versioning::CURRENT_VERSION);
+                    // Save the migrated data back
+                    if let Err(e) = self.save(&presets) {
+                        eprintln!("Warning: Failed to save migrated presets: {}", e);
+                    }
+                }
+                Ok(presets)
+            }
+            Err(e) => {
+                // If migration fails, try loading as unversioned (legacy format)
+                eprintln!("Warning: Failed to load presets with migration: {}. Trying legacy format...", e);
+                match serde_json::from_str::<Vec<Preset>>(&data) {
+                    Ok(presets) => {
+                        eprintln!("Successfully loaded {} presets in legacy format", presets.len());
+                        // Try to save in new format
+                        if let Err(save_err) = self.save(&presets) {
+                            eprintln!("Warning: Failed to save presets in new format: {}", save_err);
+                        }
+                        Ok(presets)
+                    }
+                    Err(legacy_err) => {
+                        Err(anyhow::anyhow!("Failed to load presets: migration error: {}, legacy format error: {}", e, legacy_err))
+                    }
+                }
+            }
+        }
     }
 
     pub fn save(&self, presets: &[Preset]) -> Result<()> {
-        let data = serde_json::to_string_pretty(presets)?;
+        let data = save_presets(presets)?;
         fs::write(&self.file_path, data)?;
         Ok(())
     }
@@ -46,12 +77,22 @@ impl PresetStorage {
         }
 
         let data = fs::read_to_string(&self.config_path)?;
-        let config: AppConfig = serde_json::from_str(&data)?;
+        let (config, migrated_from) = load_config(&data)?;
+        
+        // If data was migrated, save it back in the new format
+        if let Some(from_version) = migrated_from {
+            eprintln!("Migrated config from version {} to {}", from_version, crate::versioning::CURRENT_VERSION);
+            // Save the migrated data back
+            if let Err(e) = self.save_config(&config) {
+                eprintln!("Warning: Failed to save migrated config: {}", e);
+            }
+        }
+        
         Ok(config)
     }
 
     pub fn save_config(&self, config: &AppConfig) -> Result<()> {
-        let data = serde_json::to_string_pretty(config)?;
+        let data = save_config(config)?;
         fs::write(&self.config_path, data)?;
         Ok(())
     }

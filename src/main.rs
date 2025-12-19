@@ -4,6 +4,8 @@ mod action_executor;
 mod models;
 mod persistence;
 mod tcp_client;
+mod versioning;
+mod versioned_data;
 
 use action_executor::{ActionCommand, ActionExecutor, PresetMatcher};
 use anyhow::Result;
