@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 
-A powerful bridge application that enables you to control ShowXpress V9 lighting software using MIDI devices. Connect your MIDI controller, keyboard, or any MIDI-compatible device to trigger lighting presets and button actions in real-time.
+A powerful bridge application that enables you to control ShowXpress V9 lighting software using MIDI devices. The primary purpose being to use ProPresenter's MIDI integration to trigger lighting presets and button actions with macros and slides.
 
 ## Table of Contents
 
