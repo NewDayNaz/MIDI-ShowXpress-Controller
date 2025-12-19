@@ -964,7 +964,7 @@ fn connect_midi_port(
             }
         },
         (),
-    )?;
+    ).map_err(|e| anyhow::anyhow!("Failed to connect to MIDI port: {}", e))?;
 
     // Store the connection handle
     {
