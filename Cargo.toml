@@ -1,0 +1,25 @@
+[package]
+name = "lighting-midi-controller"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+imgui = "0.11"
+imgui-wgpu = "0.24"
+imgui-winit-support = "0.11"
+winit = "0.29"
+wgpu = "0.19"
+tokio = { version = "1", features = ["full"] }
+midir = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+roxmltree = "0.19"
+chrono = "0.4"
+directories = "5"
+
+[[bin]]
+name = "lighting-midi"
+path = "src/main.rs"
