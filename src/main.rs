@@ -77,6 +77,10 @@ struct AppState {
     show_new_preset_modal: bool,
     show_delete_confirm_modal: bool,
     pending_delete_preset: Option<usize>,
+    edit_preset_name: String,
+    edit_preset_desc: String,
+    show_edit_preset_modal: bool,
+    pending_edit_preset: Option<usize>,
     pending_button_action: Option<(u32, String)>,
     last_action_type: ButtonActionType,
     action_delay: f32,
@@ -150,6 +154,10 @@ impl AppState {
             show_new_preset_modal: false,
             show_delete_confirm_modal: false,
             pending_delete_preset: None,
+            edit_preset_name: String::new(),
+            edit_preset_desc: String::new(),
+            show_edit_preset_modal: false,
+            pending_edit_preset: None,
             pending_button_action: None,
             last_action_type,
             action_delay: 0.0,
@@ -172,6 +180,49 @@ impl AppState {
         if let Err(e) = self.storage.save_config(&self.config) {
             eprintln!("Failed to save config: {}", e);
         }
+    }
+
+    fn generate_duplicate_name(&self, original_name: &str) -> String {
+        let base_name = format!("{} - Copy", original_name);
+        
+        // Check if base name exists
+        if !self.presets.iter().any(|p| p.name == base_name) {
+            return base_name;
+        }
+        
+        // Try numbered versions
+        let mut number = 1;
+        loop {
+            let candidate = format!("{} - Copy ({})", original_name, number);
+            if !self.presets.iter().any(|p| p.name == candidate) {
+                return candidate;
+            }
+            number += 1;
+        }
+    }
+
+    fn duplicate_preset(&mut self, idx: usize) -> Result<()> {
+        if idx >= self.presets.len() {
+            return Err(anyhow::anyhow!("Invalid preset index"));
+        }
+
+        let original = &self.presets[idx];
+        let new_name = self.generate_duplicate_name(&original.name);
+        
+        let duplicate = Preset {
+            id: uuid::Uuid::new_v4(),
+            name: new_name,
+            description: original.description.clone(),
+            triggers: original.triggers.clone(),
+            actions: original.actions.clone(),
+        };
+
+        self.presets.push(duplicate);
+        // Select the newly duplicated preset
+        self.selected_preset = Some(self.presets.len() - 1);
+        self.save_presets()?;
+        
+        Ok(())
     }
 
     fn handle_button_click(&mut self, button_idx: usize, ui: &Ui) {
@@ -429,6 +480,18 @@ impl AppState {
 
                 ui.same_line();
                 if let Some(idx) = self.selected_preset {
+                    if ui.button("Duplicate") {
+                        let original_name = self.presets[idx].name.clone();
+                        if let Err(e) = self.duplicate_preset(idx) {
+                            self.midi_log.add(format!("Failed to duplicate preset: {}", e));
+                        } else {
+                            // The duplicate is now selected, so get its name
+                            if let Some(new_idx) = self.selected_preset {
+                                self.midi_log.add(format!("Duplicated preset: {} -> {}", original_name, self.presets[new_idx].name));
+                            }
+                        }
+                    }
+                    ui.same_line();
                     {
                         let _style1 = ui.push_style_color(StyleColor::Button, [0.8, 0.2, 0.2, 1.0]);
                         let _style2 = ui.push_style_color(StyleColor::ButtonHovered, [1.0, 0.3, 0.3, 1.0]);
@@ -440,6 +503,10 @@ impl AppState {
                     }
                 } else {
                     ui.disabled(true, || {
+                        ui.button("Duplicate");
+                    });
+                    ui.same_line();
+                    ui.disabled(true, || {
                         ui.button("Delete");
                     });
                 }
@@ -450,6 +517,13 @@ impl AppState {
                     let preset = &self.presets[idx];
                     
                     ui.text_colored([0.8, 1.0, 0.8, 1.0], &preset.name);
+                    ui.same_line();
+                    if ui.small_button("Edit") {
+                        self.edit_preset_name = preset.name.clone();
+                        self.edit_preset_desc = preset.description.clone();
+                        self.pending_edit_preset = Some(idx);
+                        self.show_edit_preset_modal = true;
+                    }
                     ui.text_disabled(&preset.description);
                     
                     ui.separator();
@@ -652,6 +726,41 @@ impl AppState {
                     ui.same_line();
                     if ui.button("Cancel") {
                         self.show_new_preset_modal = false;
+                        ui.close_current_popup();
+                    }
+                });
+
+                if self.show_edit_preset_modal {
+                    ui.open_popup("Edit Preset");
+                }
+
+                ui.popup("Edit Preset", || {
+                    ui.text("Name:");
+                    ui.input_text("##edit_name", &mut self.edit_preset_name).build();
+                    
+                    ui.text("Description:");
+                    ui.input_text("##edit_desc", &mut self.edit_preset_desc).build();
+
+                    if ui.button("Save") {
+                        if let Some(idx) = self.pending_edit_preset {
+                            if idx < self.presets.len() {
+                                self.presets[idx].name = self.edit_preset_name.clone();
+                                self.presets[idx].description = self.edit_preset_desc.clone();
+                                let _ = self.save_presets();
+                                
+                                self.edit_preset_name.clear();
+                                self.edit_preset_desc.clear();
+                                self.show_edit_preset_modal = false;
+                                self.pending_edit_preset = None;
+                                ui.close_current_popup();
+                            }
+                        }
+                    }
+
+                    ui.same_line();
+                    if ui.button("Cancel") {
+                        self.show_edit_preset_modal = false;
+                        self.pending_edit_preset = None;
                         ui.close_current_popup();
                     }
                 });

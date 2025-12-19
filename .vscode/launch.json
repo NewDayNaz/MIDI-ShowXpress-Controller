@@ -5,25 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug executable 'lighting-midi'",
+            "name": "Debug executable 'midi_showxpress_controller'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "run",
-                    "--bin=lighting-midi"
+                    "--bin=midi_showxpress_controller"
                 ]
             },
             "args": []
         },
         {
-            "name": "Debug unit tests in executable 'lighting-midi'",
+            "name": "Debug unit tests in executable 'midi_showxpress_controller'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--bin=lighting-midi"
+                    "--bin=midi_showxpress_controller"
                 ]
             }
         }
