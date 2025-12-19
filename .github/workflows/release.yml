@@ -42,6 +42,22 @@ jobs:
           echo 'export PKG_CONFIG_ALLOW_CROSS=1' | sudo tee -a /usr/local/bin/x86_64-linux-musl-pkg-config > /dev/null
           echo 'exec /usr/bin/pkg-config "$@"' | sudo tee -a /usr/local/bin/x86_64-linux-musl-pkg-config > /dev/null
           sudo chmod +x /usr/local/bin/x86_64-linux-musl-pkg-config
+          # Verify ALSA library location and create symlink if needed
+          if [ -f /usr/lib/x86_64-linux-gnu/libasound.so.2 ] && [ ! -f /usr/lib/x86_64-linux-gnu/libasound.so ]; then
+            sudo ln -s /usr/lib/x86_64-linux-gnu/libasound.so.2 /usr/lib/x86_64-linux-gnu/libasound.so
+          fi
+          # Create .cargo/config.toml to configure linker for musl
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.x86_64-unknown-linux-musl]
+          linker = "x86_64-linux-musl-gcc"
+          rustflags = [
+            "-C", "link-arg=-L/usr/lib/x86_64-linux-gnu",
+            "-C", "link-arg=-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
+          ]
+          EOF
+          # Verify pkg-config can find ALSA
+          x86_64-linux-musl-pkg-config --libs alsa || echo "pkg-config test failed"
       
       - name: Build release
         env:
