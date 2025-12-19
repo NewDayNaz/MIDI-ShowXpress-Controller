@@ -150,16 +150,17 @@ impl PresetMatcher {
         self.presets = presets;
     }
 
-    pub fn handle_midi(&self, msg: &MidiMessage) {
+    pub fn handle_midi(&self, msg: &MidiMessage) -> Option<String> {
         for preset in &self.presets {
             for trigger in &preset.triggers {
                 if trigger.matches(msg) {
                     let _ = self
                         .action_tx
                         .send(ActionCommand::ExecutePreset(preset.clone()));
-                    break; // Only trigger once per preset
+                    return Some(preset.name.clone()); // Return preset name for logging
                 }
             }
         }
+        None
     }
 }

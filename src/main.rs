@@ -238,7 +238,9 @@ impl AppState {
         self.midi_learn.capture(&msg);
 
         if let Ok(matcher) = self.preset_matcher.lock() {
-            matcher.handle_midi(&msg);
+            if let Some(preset_name) = matcher.handle_midi(&msg) {
+                self.midi_log.add(format!("Executing preset: {}", preset_name));
+            }
         }
     }
 
@@ -405,10 +407,15 @@ impl AppState {
 
                 ui.set_next_item_width(200.0);
                 if let Some(_token) = ui.begin_combo("##preset_selector", preview) {
-                    for (idx, preset) in self.presets.iter().enumerate() {
-                        let selected = self.selected_preset == Some(idx);
+                    // Create sorted indices by preset name
+                    let mut sorted_indices: Vec<usize> = (0..self.presets.len()).collect();
+                    sorted_indices.sort_by_key(|&idx| &self.presets[idx].name);
+                    
+                    for &sorted_idx in &sorted_indices {
+                        let preset = &self.presets[sorted_idx];
+                        let selected = self.selected_preset == Some(sorted_idx);
                         if ui.selectable_config(&preset.name).selected(selected).build() {
-                            self.selected_preset = Some(idx);
+                            self.selected_preset = Some(sorted_idx);
                         }
                     }
                 }
