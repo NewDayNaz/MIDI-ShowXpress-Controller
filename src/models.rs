@@ -167,7 +167,7 @@ impl MidiMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Button {
     pub id: u32,        // internal ID
     pub name: String,   // used for TLC commands

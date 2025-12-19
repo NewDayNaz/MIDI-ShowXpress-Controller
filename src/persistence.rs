@@ -62,6 +62,7 @@ pub struct AppConfig {
     pub last_midi_port: Option<String>,
     pub last_controller_address: Option<String>,
     pub last_controller_password: Option<String>,
+    pub last_action_type: Option<crate::models::ButtonActionType>,
 }
 
 impl Default for AppConfig {
@@ -69,7 +70,8 @@ impl Default for AppConfig {
         Self {
             last_midi_port: None,
             last_controller_address: Some("127.0.0.1:7348".to_string()),
-            last_controller_password: Some("password".to_string()),
+            last_controller_password: None,
+            last_action_type: Some(crate::models::ButtonActionType::Toggle),
         }
     }
 }

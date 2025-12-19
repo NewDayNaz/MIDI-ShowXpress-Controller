@@ -69,10 +69,13 @@ struct AppState {
     new_preset_name: String,
     new_preset_desc: String,
     show_new_preset_modal: bool,
+    show_delete_confirm_modal: bool,
+    pending_delete_preset: Option<usize>,
     pending_button_action: Option<(u32, String)>,
-    action_type_selected: i32,
+    last_action_type: ButtonActionType,
     action_delay: f32,
     search_filter: String,
+    buttons_just_updated: bool,
 }
 
 impl AppState {
@@ -100,7 +103,10 @@ impl AppState {
             .unwrap_or_else(|| "127.0.0.1:7348".to_string());
 
         let connection_password = config.last_controller_password.clone()
-            .unwrap_or_else(|| "password".to_string());
+            .unwrap_or_else(|| String::new());
+
+        let last_action_type = config.last_action_type
+            .unwrap_or(ButtonActionType::Toggle);
 
         Ok(Self {
             presets,
@@ -122,10 +128,13 @@ impl AppState {
             new_preset_name: String::new(),
             new_preset_desc: String::new(),
             show_new_preset_modal: false,
+            show_delete_confirm_modal: false,
+            pending_delete_preset: None,
             pending_button_action: None,
-            action_type_selected: 0,
+            last_action_type,
             action_delay: 0.0,
             search_filter: String::new(),
+            buttons_just_updated: false,
         })
     }
 
@@ -221,7 +230,7 @@ impl AppState {
                 ui.text_colored([1.0, 0.8, 0.8, 1.0], "Preset Builder");
                 ui.separator();
 
-                ui.text("Active Preset:");
+                ui.text("Preset:");
                 ui.same_line();
                 
                 let preview = if let Some(idx) = self.selected_preset {
@@ -243,6 +252,23 @@ impl AppState {
                 ui.same_line();
                 if ui.button("New") {
                     self.show_new_preset_modal = true;
+                }
+
+                ui.same_line();
+                if let Some(idx) = self.selected_preset {
+                    {
+                        let _style1 = ui.push_style_color(StyleColor::Button, [0.8, 0.2, 0.2, 1.0]);
+                        let _style2 = ui.push_style_color(StyleColor::ButtonHovered, [1.0, 0.3, 0.3, 1.0]);
+                        let _style3 = ui.push_style_color(StyleColor::ButtonActive, [0.6, 0.1, 0.1, 1.0]);
+                        if ui.button("Delete") {
+                            self.pending_delete_preset = Some(idx);
+                            self.show_delete_confirm_modal = true;
+                        }
+                    }
+                } else {
+                    ui.disabled(true, || {
+                        ui.button("Delete");
+                    });
                 }
 
                 ui.separator();
@@ -272,22 +298,126 @@ impl AppState {
 
                     ui.separator();
                     ui.text("Actions:");
+                    
+                    // Action type selector
+                    ui.text("Default Action Type:");
+                    ui.same_line();
+                    let action_types = ["Press", "Release", "Toggle"];
+                    let current_idx = match self.last_action_type {
+                        ButtonActionType::Press => 0,
+                        ButtonActionType::Release => 1,
+                        ButtonActionType::Toggle => 2,
+                    };
+                    ui.set_next_item_width(100.0);
+                    if let Some(_token) = ui.begin_combo("##action_type", action_types[current_idx]) {
+                        for (idx, action_name) in action_types.iter().enumerate() {
+                            let selected = current_idx == idx;
+                            if ui.selectable_config(action_name).selected(selected).build() {
+                                self.last_action_type = match idx {
+                                    0 => ButtonActionType::Press,
+                                    1 => ButtonActionType::Release,
+                                    2 => ButtonActionType::Toggle,
+                                    _ => ButtonActionType::Toggle,
+                                };
+                                // Save to config
+                                self.config.last_action_type = Some(self.last_action_type);
+                                self.save_config();
+                            }
+                        }
+                    }
+                    
+                    let preset_idx = idx; // Copy the index to avoid borrowing issues
                     ui.child_window("##actions")
                         .size([0.0, 0.0])
                         .border(true)
                         .build(|| {
-                            for (i, action) in preset.actions.iter().enumerate() {
+                            // Make this area a drop target
+                            if let Some(target) = ui.drag_drop_target() {
+                                if let Some(Ok(payload)) = target.accept_payload::<usize, _>("BUTTON", DragDropFlags::empty()) {
+                                    let button_idx = payload.data;
+                                    // Drop the preset borrow before mutable operations
+                                    let button_name = if button_idx < self.buttons.len() {
+                                        self.buttons[button_idx].name.clone()
+                                    } else {
+                                        String::new()
+                                    };
+                                    if !button_name.is_empty() {
+                                        let action = ButtonAction {
+                                            button_name,
+                                            action: self.last_action_type,
+                                            delay_secs: 0.0,
+                                        };
+                                        self.presets[preset_idx].actions.push(action);
+                                        let _ = self.save_presets();
+                                    }
+                                }
+                                target.pop();
+                            }
+                            
+                            // Display actions - use indices to avoid long-lived borrows
+                            const MAX_NAME_LENGTH: usize = 35;
+                            let actions_len = self.presets[preset_idx].actions.len();
+                            for i in 0..actions_len {
+                                // Collect data we need first, then drop the borrow
+                                let (button_name, current_action_type, truncated_name, button_name_len) = {
+                                    let action = &self.presets[preset_idx].actions[i];
+                                    let button_name_len = action.button_name.len();
+                                    let truncated_name = if button_name_len > MAX_NAME_LENGTH {
+                                        format!("{}..", &action.button_name[..MAX_NAME_LENGTH])
+                                    } else {
+                                        action.button_name.clone()
+                                    };
+                                    (action.button_name.clone(), action.action, truncated_name, button_name_len)
+                                };
+                                
                                 ui.bullet();
-                                ui.text(&format!(
-                                    "{:?} {} (delay: {:.2}s)",
-                                    action.action, action.button_name, action.delay_secs
-                                ));
+                                
+                                // Action type dropdown for editing
+                                let action_types = ["Press", "Release", "Toggle"];
+                                let current_action_idx = match current_action_type {
+                                    ButtonActionType::Press => 0,
+                                    ButtonActionType::Release => 1,
+                                    ButtonActionType::Toggle => 2,
+                                };
+                                ui.set_next_item_width(80.0);
+                                if let Some(_token) = ui.begin_combo(&format!("##action_type_{}", i), action_types[current_action_idx]) {
+                                    for (idx, action_name) in action_types.iter().enumerate() {
+                                        let selected = current_action_idx == idx;
+                                        if ui.selectable_config(action_name).selected(selected).build() {
+                                            let new_action_type = match idx {
+                                                0 => ButtonActionType::Press,
+                                                1 => ButtonActionType::Release,
+                                                2 => ButtonActionType::Toggle,
+                                                _ => ButtonActionType::Toggle,
+                                            };
+                                            // Now we can mutably borrow since we dropped the immutable borrow
+                                            self.presets[preset_idx].actions[i].action = new_action_type;
+                                            let _ = self.save_presets();
+                                        }
+                                    }
+                                }
+                                
+                                ui.same_line();
+                                ui.text(&truncated_name);
+                                
+                                // Show tooltip with full name if truncated
+                                if button_name_len > MAX_NAME_LENGTH && ui.is_item_hovered() {
+                                    let full_action_text = format!(
+                                        "{:?} {}",
+                                        current_action_type, button_name
+                                    );
+                                    ui.tooltip_text(&full_action_text);
+                                }
+                                
                                 ui.same_line();
                                 if ui.small_button(&format!("X##act_{}", i)) {
+                                    self.presets[preset_idx].actions.remove(i);
+                                    let _ = self.save_presets();
+                                    break; // Break to avoid index issues after removal
                                 }
                             }
-                            if preset.actions.is_empty() {
-                                ui.text_disabled("Drag buttons here");
+                            if self.presets[preset_idx].actions.is_empty() {
+                                ui.text_disabled("Drag buttons here or double-click a button");
                             }
                         });
                 }
@@ -309,6 +439,8 @@ impl AppState {
                             self.new_preset_desc.clone(),
                         );
                         self.presets.push(preset);
+                        // Automatically select the newly created preset
+                        self.selected_preset = Some(self.presets.len() - 1);
                         let _ = self.save_presets();
                         
                         self.new_preset_name.clear();
@@ -321,6 +453,74 @@ impl AppState {
                     if ui.button("Cancel") {
                         self.show_new_preset_modal = false;
                         ui.close_current_popup();
+                    }
+                });
+
+                if self.show_delete_confirm_modal {
+                    ui.open_popup("Delete Preset");
+                }
+
+                ui.popup("Delete Preset", || {
+                    if let Some(idx) = self.pending_delete_preset {
+                        if idx < self.presets.len() {
+                            let preset_name = &self.presets[idx].name;
+                            ui.text_colored([1.0, 0.8, 0.8, 1.0], "Are you sure?");
+                            ui.separator();
+                            ui.text(&format!("Delete preset \"{}\"?", preset_name));
+                            ui.text_disabled("This action cannot be undone.");
+                            ui.separator();
+
+                            {
+                                let _style1 = ui.push_style_color(StyleColor::Button, [0.8, 0.2, 0.2, 1.0]);
+                                let _style2 = ui.push_style_color(StyleColor::ButtonHovered, [1.0, 0.3, 0.3, 1.0]);
+                                let _style3 = ui.push_style_color(StyleColor::ButtonActive, [0.6, 0.1, 0.1, 1.0]);
+                                if ui.button("Delete") {
+                                    // Remove the preset
+                                    self.presets.remove(idx);
+                                    
+                                    // Update selected_preset if needed
+                                    if self.presets.is_empty() {
+                                        self.selected_preset = None;
+                                    } else if let Some(selected) = self.selected_preset {
+                                        if selected >= idx {
+                                            // If we deleted the selected preset or one before it, adjust
+                                            if selected == idx {
+                                                // Deleted the selected one, select the previous or first
+                                                self.selected_preset = if idx > 0 {
+                                                    Some(idx - 1)
+                                                } else if !self.presets.is_empty() {
+                                                    Some(0)
+                                                } else {
+                                                    None
+                                                };
+                                            } else {
+                                                // Deleted one before selected, shift index down
+                                                self.selected_preset = Some(selected - 1);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Save and update matcher
+                                    let _ = self.save_presets();
+                                    
+                                    self.show_delete_confirm_modal = false;
+                                    self.pending_delete_preset = None;
+                                    ui.close_current_popup();
+                                }
+                            }
+
+                            ui.same_line();
+                            if ui.button("Cancel") {
+                                self.show_delete_confirm_modal = false;
+                                self.pending_delete_preset = None;
+                                ui.close_current_popup();
+                            }
+                        } else {
+                            // Invalid index, just close
+                            self.show_delete_confirm_modal = false;
+                            self.pending_delete_preset = None;
+                            ui.close_current_popup();
+                        }
                     }
                 });
             });
@@ -336,8 +536,19 @@ impl AppState {
 
                 ui.text("Controller Address:");
                 ui.input_text("##address", &mut self.connection_address).build();
+                if ui.is_item_deactivated_after_edit() {
+                    self.config.last_controller_address = Some(self.connection_address.clone());
+                    self.save_config();
+                }
+                
                 ui.text("Controller Password:");
-                ui.input_text("##password", &mut self.connection_password).build();
+                ui.input_text("##password", &mut self.connection_password)
+                    .password(true)
+                    .build();
+                if ui.is_item_deactivated_after_edit() {
+                    self.config.last_controller_password = Some(self.connection_password.clone());
+                    self.save_config();
+                }
                 
                 let connecting = self.connection_state == ConnectionState::Connecting;
 
@@ -362,20 +573,49 @@ impl AppState {
                             .size([0.0, 0.0])
                             .border(true)
                             .build(|| {
-                                for button in &self.buttons {
-                                    if ui.selectable(&format!("{} ({})", button.name, button.id)) {
-                                        // Optional: handle button selection
+                                let buttons_len = self.buttons.len();
+                                for button_idx in 0..buttons_len {
+                                    let button = &self.buttons[button_idx];
+                                    let button_label = &button.name;
+                                    
+                                    // Make button selectable
+                                    if ui.selectable(&button_label) {
+                                        // Handle single click if needed
                                     }
+                                    
+                                    // Set up drag source - call after the item
+                                    if let Some(tooltip) = ui.drag_drop_source_config("BUTTON").begin_payload(button_idx) {
+                                        tooltip.end();
+                                    }
+                                    
+                                    // Handle double-click - collect values first to avoid borrow conflicts
+                                    if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                                        let preset_idx_opt = self.selected_preset;
+                                        let button_name = button.name.clone();
+                                        let action_type = self.last_action_type;
+                                        // Now we can mutably borrow self (button reference is dropped)
+                                        if let Some(preset_idx) = preset_idx_opt {
+                                            let action = ButtonAction {
+                                                button_name,
+                                                action: action_type,
+                                                delay_secs: 0.0,
+                                            };
+                                            self.presets[preset_idx].actions.push(action);
+                                            let _ = self.save_presets();
+                                        }
+                                    }
+                                    
                                     if ui.is_item_hovered() {
-                                        ui.tooltip_text("Drag to preset area");
+                                        ui.tooltip_text("Double-click or drag to preset actions");
                                     }
                                 }
 
                                 if self.buttons.is_empty() {
                                     ui.text_disabled("No buttons loaded");
-                                } else {
-                                    // Auto-scroll to the last button for live updates
+                                } else if self.buttons_just_updated {
+                                    // Auto-scroll to the last button only when buttons are updated
                                     ui.set_scroll_here_y_with_ratio(1.0);
+                                    self.buttons_just_updated = false;
                                 }
                             });
                     }
@@ -576,9 +816,16 @@ fn run() -> Result<()> {
                                 match cmd {
                                     ActionCommand::ConnectionSuccess(buttons) => {
                                         let button_count = buttons.len();
+                                        // Only mark as updated if the list actually changed
+                                        let buttons_changed = state.buttons != buttons;
+                                        if buttons_changed {
+                                            state.buttons_just_updated = true;
+                                        }
                                         state.buttons = buttons;
                                         state.connection_state = ConnectionState::Connected;
-                                        state.midi_log.add(format!("Connected! Loaded {} buttons", button_count));
+                                        if buttons_changed {
+                                            state.midi_log.add(format!("Connected! Loaded {} buttons", button_count));
+                                        }
                                     }
                                     ActionCommand::ConnectionError(err) => {
                                         state.connection_state = ConnectionState::Error(err.clone());

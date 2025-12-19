@@ -42,10 +42,16 @@ impl LiveParser {
     pub fn feed(&mut self, data: &[u8]) {
         self.buffer.extend_from_slice(data);
 
-        while let Some(pos) = self.buffer.windows(2).position(|w| w == b"\r\n") {
-            let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
-            self.buffer.drain(..pos + 2);
-            self.parse_line(&line);
+        loop {
+            // Handle regular line-based messages
+            if let Some(pos) = self.buffer.windows(2).position(|w| w == b"\r\n") {
+                let line = String::from_utf8_lossy(&self.buffer[..pos]).to_string();
+                self.buffer.drain(..pos + 2);
+                self.parse_line(&line);
+            } else {
+                // No complete line yet
+                break;
+            }
         }
     }
 
@@ -74,17 +80,11 @@ impl LiveParser {
         }
 
         if line.starts_with("BUTTON_LIST|") {
-            if let Some(len_str) = line.split(SEPARATOR).nth(1) {
-                if let Ok(len) = len_str.parse::<usize>() {
-                    if self.buffer.len() >= len + 2 {
-                        let xml_bytes: Vec<u8> = self.buffer.drain(..len).collect();
-                        let _ = self.buffer.drain(..2); // trailing CRLF
-                        self.messages.push_back(LiveMessage::ButtonList(parse_buttons(&xml_bytes)));
-                        return;
-                    }
-                }
+            // BUTTON_LIST| contains the XML directly after the separator
+            if let Some(xml_str) = line.split('|').nth(1) {
+                let xml_bytes = xml_str.as_bytes();
+                self.messages.push_back(LiveMessage::ButtonList(parse_buttons(xml_bytes)));
             }
-            // Not enough data yet, wait for more
             return;
         }
 
@@ -177,7 +177,7 @@ impl LightingControllerClient {
         stream.write_all(hello.as_bytes()).await?;
 
         // Wait for HELLO or ERROR
-        loop {
+        'handshake: loop {
             let mut buf = [0u8; 1024];
             let n = timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
             if n == 0 {
@@ -187,14 +187,10 @@ impl LightingControllerClient {
             parser.feed(&buf[..n]);
             while let Some(msg) = parser.next_message() {
                 match msg {
-                    LiveMessage::Connected(_) => break,
+                    LiveMessage::Connected(_) => break 'handshake,
                     LiveMessage::Error(e) => return Err(anyhow!("HELLO failed: {}", e)),
                     _ => continue,
                 }
-            }
-
-            if parser.messages.is_empty() {
-                continue;
             }
         }
 
