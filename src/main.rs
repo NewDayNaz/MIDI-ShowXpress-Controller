@@ -93,6 +93,9 @@ struct AppState {
     // Button Selection State
     selected_button_indices: HashSet<usize>,
     last_clicked_button_index: Option<usize>,
+    
+    // Action Selection State
+    selected_action_index: Option<usize>,
 }
 
 impl AppState {
@@ -169,6 +172,7 @@ impl AppState {
             buttons_just_updated: false,
             selected_button_indices: HashSet::new(),
             last_clicked_button_index: None,
+            selected_action_index: None,
         })
     }
 
@@ -662,6 +666,30 @@ impl AppState {
                         .size([0.0, 0.0])
                         .border(true)
                         .build(|| {
+                            // Handle keyboard input for reordering
+                            if let Some(selected_idx) = self.selected_action_index {
+                                if selected_idx < self.presets[preset_idx].actions.len() {
+                                    // Check for up arrow
+                                    if ui.is_key_pressed(Key::UpArrow) {
+                                        if selected_idx > 0 {
+                                            // Swap with previous action
+                                            self.presets[preset_idx].actions.swap(selected_idx, selected_idx - 1);
+                                            self.selected_action_index = Some(selected_idx - 1);
+                                            let _ = self.save_presets();
+                                        }
+                                    }
+                                    // Check for down arrow
+                                    if ui.is_key_pressed(Key::DownArrow) {
+                                        if selected_idx < self.presets[preset_idx].actions.len() - 1 {
+                                            // Swap with next action
+                                            self.presets[preset_idx].actions.swap(selected_idx, selected_idx + 1);
+                                            self.selected_action_index = Some(selected_idx + 1);
+                                            let _ = self.save_presets();
+                                        }
+                                    }
+                                }
+                            }
+                            
                             // Display actions - use indices to avoid long-lived borrows
                             const MAX_NAME_LENGTH: usize = 34;
                             let actions_len = self.presets[preset_idx].actions.len();
@@ -678,7 +706,36 @@ impl AppState {
                                     (action.button_name.clone(), action.action, truncated_name, button_name_len)
                                 };
                                 
-                                ui.bullet();
+                                // Check if this action is selected
+                                let is_selected = self.selected_action_index == Some(i);
+                                
+                                // Apply selection styling to the row
+                                let _style_guard = if is_selected {
+                                    Some((
+                                        ui.push_style_color(StyleColor::Header, [0.2, 0.5, 0.8, 0.5]),
+                                        ui.push_style_color(StyleColor::HeaderHovered, [0.3, 0.6, 0.9, 0.7]),
+                                        ui.push_style_color(StyleColor::HeaderActive, [0.2, 0.5, 0.8, 0.9]),
+                                    ))
+                                } else {
+                                    None
+                                };
+                                
+                                // Make the bullet and text area clickable for selection
+                                let bullet_text = if is_selected { ">" } else { "*" };
+                                let selectable_text = format!("{} {}", bullet_text, truncated_name);
+                                if ui.selectable_config(&selectable_text).selected(is_selected).build() {
+                                    // Clicked on this action - select it
+                                    self.selected_action_index = Some(i);
+                                }
+                                
+                                // Show tooltip with instructions
+                                if ui.is_item_hovered() {
+                                    ui.tooltip_text("Click to select, Up/Down arrows to reorder");
+                                }
+                                
+                                // Style guard will be dropped here automatically
+                                
+                                ui.same_line();
                                 
                                 // Action type dropdown for editing
                                 let action_types = ["Press", "Release", "Toggle"];
@@ -706,7 +763,6 @@ impl AppState {
                                 }
                                 
                                 ui.same_line();
-                                ui.text(&truncated_name);
                                 
                                 // Show tooltip with full name if truncated
                                 if button_name_len > MAX_NAME_LENGTH && ui.is_item_hovered() {
@@ -720,6 +776,15 @@ impl AppState {
                                 ui.same_line();
                                 if ui.small_button(&format!("X##act_{}", i)) {
                                     self.presets[preset_idx].actions.remove(i);
+                                    // Clear selection if we removed the selected action
+                                    if self.selected_action_index == Some(i) {
+                                        self.selected_action_index = None;
+                                    } else if let Some(sel_idx) = self.selected_action_index {
+                                        // Adjust selection index if needed
+                                        if sel_idx > i {
+                                            self.selected_action_index = Some(sel_idx - 1);
+                                        }
+                                    }
                                     let _ = self.save_presets();
                                     break; // Break to avoid index issues after removal
                                 }
