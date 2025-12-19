@@ -1043,8 +1043,31 @@ fn run() -> Result<()> {
             }
             winit::event::Event::RedrawRequested(_) => {
                 let now = std::time::Instant::now();
-                imgui.io_mut().update_delta_time(now - last_frame);
+                let delta_time = now - last_frame;
                 last_frame = now;
+
+                // Check window size and reconfigure surface if needed BEFORE getting frame
+                let window_size = window.inner_size();
+                
+                // Ensure window size is valid (at least 2x2 for rendering)
+                if window_size.width < 2 || window_size.height < 2 {
+                    // Window is too small, skip rendering
+                    return;
+                }
+                
+                // Check if window size changed but surface wasn't updated
+                if surface_config.width != window_size.width || surface_config.height != window_size.height {
+                    surface_config.width = window_size.width;
+                    surface_config.height = window_size.height;
+                    surface.configure(&device, &surface_config);
+                    // After reconfiguring, skip this frame and wait for next redraw
+                    return;
+                }
+                
+                // Double-check surface config is valid before rendering
+                if surface_config.width < 2 || surface_config.height < 2 {
+                    return;
+                }
 
                 let frame = match surface.get_current_texture() {
                     Ok(frame) => frame,
@@ -1058,17 +1081,30 @@ fn run() -> Result<()> {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                platform
-                    .prepare_frame(imgui.io_mut(), &window)
-                    .expect("Failed to prepare frame");
+                // Get window size in logical coordinates for imgui
+                // imgui works in logical coordinates (points), so we need to convert from physical pixels
+                let scale_factor = window.scale_factor();
+                let window_width = window_size.width as f32 / scale_factor as f32;
+                let window_height = window_size.height as f32 / scale_factor as f32;
+                
+                // Update imgui state before calling frame()
+                // Ensure display size matches window size to prevent scissor rect issues
+                {
+                    let io = imgui.io_mut();
+                    io.update_delta_time(delta_time);
+                    io.display_size = [window_width, window_height];
+                    platform
+                        .prepare_frame(io, &window)
+                        .expect("Failed to prepare frame");
+                }
                 
                 let ui = imgui.frame();
 
                 let mut port_change_request: Option<usize> = None;
                 
                 ui.window("Lighting MIDI Controller")
-                    .size([1200.0, 800.0], Condition::FirstUseEver)
-                    .position([0.0, 0.0], Condition::FirstUseEver)
+                    .size([window_width, window_height], Condition::Always)
+                    .position([0.0, 0.0], Condition::Always)
                     .movable(false)
                     .resizable(false)
                     .build(|| {
