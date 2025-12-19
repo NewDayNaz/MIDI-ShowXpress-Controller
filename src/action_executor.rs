@@ -83,6 +83,10 @@ impl ActionExecutor {
             }
 
             ActionCommand::ExecutePreset(preset) => {
+                // Wait for preset delay before executing actions
+                if preset.delay_secs > 0.0 {
+                    tokio::time::sleep(Duration::from_secs_f32(preset.delay_secs)).await;
+                }
                 self.execute_actions(&preset.actions).await?;
             }
 

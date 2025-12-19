@@ -79,6 +79,7 @@ struct AppState {
     pending_delete_preset: Option<usize>,
     edit_preset_name: String,
     edit_preset_desc: String,
+    edit_preset_delay: f32,
     show_edit_preset_modal: bool,
     pending_edit_preset: Option<usize>,
     pending_button_action: Option<(u32, String)>,
@@ -156,6 +157,7 @@ impl AppState {
             pending_delete_preset: None,
             edit_preset_name: String::new(),
             edit_preset_desc: String::new(),
+            edit_preset_delay: 0.1,
             show_edit_preset_modal: false,
             pending_edit_preset: None,
             pending_button_action: None,
@@ -215,6 +217,7 @@ impl AppState {
             description: original.description.clone(),
             triggers: original.triggers.clone(),
             actions: original.actions.clone(),
+            delay_secs: original.delay_secs,
         };
 
         self.presets.push(duplicate);
@@ -514,30 +517,59 @@ impl AppState {
                 ui.separator();
 
                 if let Some(idx) = self.selected_preset {
-                    let preset = &self.presets[idx];
+                    // Get values we need before any mutations
+                    let preset_idx = idx;
+                    let (preset_name, preset_desc, preset_delay, has_actions) = {
+                        let preset = &self.presets[preset_idx];
+                        (
+                            preset.name.clone(),
+                            preset.description.clone(),
+                            preset.delay_secs,
+                            !preset.actions.is_empty(),
+                        )
+                    };
                     
-                    ui.text_colored([0.8, 1.0, 0.8, 1.0], &preset.name);
+                    ui.text_colored([0.8, 1.0, 0.8, 1.0], &preset_name);
                     ui.same_line();
                     if ui.small_button("Edit") {
-                        self.edit_preset_name = preset.name.clone();
-                        self.edit_preset_desc = preset.description.clone();
+                        self.edit_preset_name = preset_name.clone();
+                        self.edit_preset_desc = preset_desc.clone();
+                        self.edit_preset_delay = preset_delay;
                         self.pending_edit_preset = Some(idx);
                         self.show_edit_preset_modal = true;
                     }
-                    ui.text_disabled(&preset.description);
+                    ui.text_disabled(&preset_desc);
+                    
+                    ui.separator();
+                    
+                    // Preset delay input
+                    ui.text("Execution Delay (s):");
+                    ui.same_line();
+                    let mut delay_value = preset_delay;
+                    ui.set_next_item_width(100.0);
+                    if ui.input_float("##preset_delay", &mut delay_value).build() {
+                        // Clamp to non-negative values
+                        if delay_value < 0.0 {
+                            delay_value = 0.0;
+                        }
+                        self.presets[preset_idx].delay_secs = delay_value;
+                        let _ = self.save_presets();
+                    }
+                    if ui.is_item_hovered() {
+                        ui.tooltip_text("Delay before executing preset actions (in seconds). Use 0 for immediate execution.");
+                    }
                     
                     ui.separator();
                     
                     // Run preset button - disabled if not connected
                     let is_connected = self.connection_state == ConnectionState::Connected;
-                    let has_actions = !preset.actions.is_empty();
                     let can_run = is_connected && has_actions;
                     
                     ui.disabled(!can_run, || {
                         if ui.button("Run Preset") {
-                            let preset_clone = preset.clone();
+                            let preset_clone = self.presets[preset_idx].clone();
                             let _ = self.action_tx.send(ActionCommand::ExecutePreset(preset_clone));
-                            self.midi_log.add(format!("Manually running preset: {}", preset.name));
+                            self.midi_log.add(format!("Manually running preset: {}", preset_name));
                         }
                     });
                     
@@ -740,16 +772,32 @@ impl AppState {
                     
                     ui.text("Description:");
                     ui.input_text("##edit_desc", &mut self.edit_preset_desc).build();
+                    
+                    ui.text("Execution Delay (s):");
+                    let mut delay_value = self.edit_preset_delay;
+                    ui.set_next_item_width(100.0);
+                    if ui.input_float("##edit_delay", &mut delay_value).build() {
+                        // Clamp to non-negative values
+                        if delay_value < 0.0 {
+                            delay_value = 0.0;
+                        }
+                        self.edit_preset_delay = delay_value;
+                    }
+                    if ui.is_item_hovered() {
+                        ui.tooltip_text("Delay before executing preset actions (in seconds). Use 0 for immediate execution.");
+                    }
 
                     if ui.button("Save") {
                         if let Some(idx) = self.pending_edit_preset {
                             if idx < self.presets.len() {
                                 self.presets[idx].name = self.edit_preset_name.clone();
                                 self.presets[idx].description = self.edit_preset_desc.clone();
+                                self.presets[idx].delay_secs = self.edit_preset_delay;
                                 let _ = self.save_presets();
                                 
                                 self.edit_preset_name.clear();
                                 self.edit_preset_desc.clear();
+                                self.edit_preset_delay = 0.1;
                                 self.show_edit_preset_modal = false;
                                 self.pending_edit_preset = None;
                                 ui.close_current_popup();
@@ -759,6 +807,9 @@ impl AppState {
 
                     ui.same_line();
                     if ui.button("Cancel") {
+                        self.edit_preset_name.clear();
+                        self.edit_preset_desc.clear();
+                        self.edit_preset_delay = 0.1;
                         self.show_edit_preset_modal = false;
                         self.pending_edit_preset = None;
                         ui.close_current_popup();

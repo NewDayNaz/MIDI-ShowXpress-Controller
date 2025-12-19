@@ -8,6 +8,12 @@ pub struct Preset {
     pub description: String,
     pub triggers: Vec<MidiTrigger>,
     pub actions: Vec<ButtonAction>,
+    #[serde(default = "default_preset_delay")]
+    pub delay_secs: f32,
+}
+
+fn default_preset_delay() -> f32 {
+    0.1
 }
 
 impl Preset {
@@ -18,6 +24,7 @@ impl Preset {
             description,
             triggers: Vec::new(),
             actions: Vec::new(),
+            delay_secs: 0.1,
         }
     }
 }
