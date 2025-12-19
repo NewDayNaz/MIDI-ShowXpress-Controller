@@ -2,6 +2,13 @@
 name = "lighting-midi-controller"
 version = "0.1.0"
 edition = "2021"
+authors = ["Matthew Graham <me@mattgraham.me>"]
+description = "A bridge application that enables control of ShowXpress lighting software using MIDI devices"
+license = "MIT"
+repository = "https://github.com/newdaynaz/MIDI-ShowXpress-Controller"
+keywords = ["midi", "lighting", "showxpress", "controller", "dmx"]
+categories = ["multimedia", "hardware-support"]
+readme = "README.md"
 
 [dependencies]
 imgui = "0.11"
