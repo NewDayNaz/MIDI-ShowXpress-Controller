@@ -20,7 +20,14 @@ pollster = "0.3"
 roxmltree = "0.19"
 chrono = "0.4"
 directories = "5"
+single-instance = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["consoleapi", "processenv", "wincon", "winuser"] }
+
+[build-dependencies]
+winres = "0.1"
 
 [[bin]]
-name = "lighting-midi"
+name = "midi_showxpress_controller"
 path = "src/main.rs"

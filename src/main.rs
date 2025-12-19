@@ -1317,10 +1317,81 @@ fn run() -> Result<()> {
     });
 }
 
+#[cfg(windows)]
+fn setup_console_if_needed() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let show_console = args.iter().any(|arg| arg == "-console" || arg == "--console");
+    
+    if show_console {
+        unsafe {
+            use winapi::um::consoleapi::AllocConsole;
+            
+            if AllocConsole() != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn show_error_message(title: &str, message: &str) {
+    unsafe {
+        use winapi::um::winuser::{MessageBoxW, MB_OK, MB_ICONERROR};
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        
+        let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
+        let message_wide: Vec<u16> = OsStr::new(message).encode_wide().chain(Some(0)).collect();
+        
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message_wide.as_ptr(),
+            title_wide.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn setup_console_if_needed() -> bool {
+    // On non-Windows platforms, console is always available
+    true
+}
+
+#[cfg(not(windows))]
+fn show_error_message(_title: &str, message: &str) {
+    eprintln!("{}", message);
+}
+
 #[tokio::main]
 async fn main() {
+    // Setup console if -console flag is present (Windows only)
+    let has_console = setup_console_if_needed();
+    
+    // Ensure only one instance is running
+    let instance = single_instance::SingleInstance::new("midi_showxpress_controller").unwrap();
+    if !instance.is_single() {
+        let error_msg = "Another instance of MIDI ShowXpress Controller is already running.\nPlease close the existing instance before starting a new one.";
+        if has_console {
+            eprintln!("{}", error_msg);
+        } else {
+            show_error_message("MIDI ShowXpress Controller", error_msg);
+        }
+        std::process::exit(1);
+    }
+
+    // Keep the instance guard alive for the duration of the program
+    // The guard will be dropped when the program exits
+    let _instance_guard = instance;
+
     if let Err(e) = run() {
-        eprintln!("Application error: {}", e);
+        let error_msg = format!("Application error: {}", e);
+        if has_console {
+            eprintln!("{}", error_msg);
+        } else {
+            show_error_message("MIDI ShowXpress Controller", &error_msg);
+        }
         std::process::exit(1);
     }
 }
