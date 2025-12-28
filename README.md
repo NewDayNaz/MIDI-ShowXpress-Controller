@@ -34,25 +34,12 @@ A powerful bridge application that enables you to control ShowXpress V9 lighting
   - Press actions
   - Release actions
   - Toggle actions
-- **Preset Organization**: Sort and manage multiple presets with intuitive interface
 
 ### ShowXpress Controller Integration
 - **TCP Connection**: Connect to ShowXpress controller via TCP/IP (default: 127.0.0.1:7348)
-- **Password Support**: Secure connection with password authentication
 - **Button Discovery**: Automatically discovers and lists available buttons from the controller
 - **Real-time Button Control**: Execute button actions directly through the interface
 - **Automatic Reconnection**: Periodic button list refresh to stay in sync with controller
-
-### User Interface
-- **Modern GUI**: Clean, intuitive interface built with immediate mode GUI
-- **Three-Panel Layout**: MIDI Monitor, Preset Builder, and Lighting Controller panels
-- **Interactive Button Selection**: Click, Shift+Click, Ctrl+Click, and double-click support
-- **Visual Feedback**: Color-coded MIDI messages with flash indicators
-
-### Data Persistence
-- **Automatic Saving**: Presets and configuration are automatically saved
-- **Configuration Persistence**: Remembers last MIDI port, controller address, and settings
-- **JSON Storage**: Human-readable preset storage format
 
 ## System Requirements
 
