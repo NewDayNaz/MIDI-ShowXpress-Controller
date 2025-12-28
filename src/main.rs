@@ -720,21 +720,9 @@ impl AppState {
                                     None
                                 };
                                 
-                                // Make the bullet and text area clickable for selection
-                                let bullet_text = if is_selected { ">" } else { "*" };
-                                let selectable_text = format!("{} {}", bullet_text, truncated_name);
-                                if ui.selectable_config(&selectable_text).selected(is_selected).build() {
-                                    // Clicked on this action - select it
-                                    self.selected_action_index = Some(i);
-                                }
-                                
-                                // Show tooltip with instructions
-                                if ui.is_item_hovered() {
-                                    ui.tooltip_text("Click to select, Up/Down arrows to reorder");
-                                }
-                                
-                                // Style guard will be dropped here automatically
-                                
+                                // Display bullet (with selection indicator)
+                                let bullet_char = if is_selected { ">" } else { "*" };
+                                ui.text(bullet_char);
                                 ui.same_line();
                                 
                                 // Action type dropdown for editing
@@ -764,13 +752,43 @@ impl AppState {
                                 
                                 ui.same_line();
                                 
-                                // Show tooltip with full name if truncated
-                                if button_name_len > MAX_NAME_LENGTH && ui.is_item_hovered() {
-                                    let full_action_text = format!(
-                                        "{:?} {}",
-                                        current_action_type, button_name
-                                    );
-                                    ui.tooltip_text(&full_action_text);
+                                // Make text clickable for selection using a button styled as text
+                                // This ensures X button gets click priority since it's rendered after
+                                let _button_style = if is_selected {
+                                    // Selected: use header colors
+                                    Some((
+                                        ui.push_style_color(StyleColor::Button, [0.2, 0.5, 0.8, 0.5]),
+                                        ui.push_style_color(StyleColor::ButtonHovered, [0.3, 0.6, 0.9, 0.7]),
+                                        ui.push_style_color(StyleColor::ButtonActive, [0.2, 0.5, 0.8, 0.9]),
+                                        ui.push_style_color(StyleColor::Text, [0.9, 0.95, 1.0, 1.0]),
+                                    ))
+                                } else {
+                                    // Not selected: make button look like text
+                                    Some((
+                                        ui.push_style_color(StyleColor::Button, [0.0, 0.0, 0.0, 0.0]), // Transparent
+                                        ui.push_style_color(StyleColor::ButtonHovered, [0.2, 0.2, 0.2, 0.3]), // Slight highlight on hover
+                                        ui.push_style_color(StyleColor::ButtonActive, [0.3, 0.3, 0.3, 0.5]),
+                                        ui.push_style_color(StyleColor::Text, [1.0, 1.0, 1.0, 1.0]), // Normal text color
+                                    ))
+                                };
+                                
+                                // Limit button width to leave room for X button
+                                ui.set_next_item_width(-30.0);
+                                if ui.button(&truncated_name) {
+                                    self.selected_action_index = Some(i);
+                                }
+                                
+                                // Show tooltip with instructions or full name
+                                if ui.is_item_hovered() {
+                                    if button_name_len > MAX_NAME_LENGTH {
+                                        let full_action_text = format!(
+                                            "{:?} {}",
+                                            current_action_type, button_name
+                                        );
+                                        ui.tooltip_text(&full_action_text);
+                                    } else {
+                                        ui.tooltip_text("Click to select, Up/Down arrows to reorder");
+                                    }
                                 }
                                 
                                 ui.same_line();
@@ -788,6 +806,8 @@ impl AppState {
                                     let _ = self.save_presets();
                                     break; // Break to avoid index issues after removal
                                 }
+                                
+                                // Style guard will be dropped here automatically
                             }
                             if self.presets[preset_idx].actions.is_empty() {
                                 ui.text_disabled("Double-click a button to add it here");
@@ -1288,11 +1308,36 @@ fn run() -> Result<()> {
         }
     }
 
+    // Load window icon from embedded ICO file
+    let window_icon = {
+        // Embed the icon file at compile time
+        const ICON_BYTES: &[u8] = include_bytes!("../midi_showxpress_controller.ico");
+        
+        // Decode the ICO file from embedded bytes
+        if let Ok(img) = image::load_from_memory(ICON_BYTES) {
+            let rgba = img.to_rgba8();
+            let width = rgba.width();
+            let height = rgba.height();
+            if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), width, height) {
+                Some(icon)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    
     let event_loop = winit::event_loop::EventLoop::new();
-    let window = winit::window::WindowBuilder::new()
+    let mut window_builder = winit::window::WindowBuilder::new()
         .with_title("MIDI ShowXpress Controller")
-        .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 800.0))
-        .build(&event_loop)?;
+        .with_inner_size(winit::dpi::LogicalSize::new(1200.0, 800.0));
+    
+    if let Some(icon) = window_icon {
+        window_builder = window_builder.with_window_icon(Some(icon));
+    }
+    
+    let window = window_builder.build(&event_loop)?;
 
     let mut imgui = imgui::Context::create();
     let mut platform = imgui_winit_support::WinitPlatform::init(&mut imgui);
